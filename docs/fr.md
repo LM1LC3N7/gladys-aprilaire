@@ -71,7 +71,8 @@ thermostat peut déplacer l’autre consigne pour garder son écart : c’est lu
 
 Pendant qu’un arrêt n’est pas confirmé, les consignes et le ventilateur sont refusés ; un nouveau mode
 est accepté et lève l’arrêt quand il part (après l’avoir levé dans `/data` : si `/data` n’est pas
-inscriptible, rien n’est envoyé).
+inscriptible, rien n’est envoyé) et que le thermostat ne le refuse pas : refusé (code NACK, « occupé »
+compris), l’arrêt est de nouveau gardé tel qu’il était, dans `/data` aussi, et vérifié aussitôt.
 
 ## L’arrêt (mode Arrêt)
 
@@ -95,8 +96,8 @@ thermostat jamais lu, ni à une configuration pas encore lue après un redémarr
 - Non confirmé, il est vérifié toutes les 15 s pendant 3 minutes puis chaque minute, et renvoyé tant
   que le thermostat montre le mode d’avant, 3 fois au plus par clic (un refus « occupé » du
   thermostat ne compte pas). Il prend fin quand une lecture montre l’arrêt, quand un nouveau mode
-  choisi dans Gladys part, ou quand un autre mode est lu deux fois de suite (choisi sur le
-  thermostat) ; jamais avec le temps.
+  choisi dans Gladys part sans être refusé par le thermostat, ou quand un autre mode est lu deux fois
+  de suite (choisi sur le thermostat) ; jamais avec le temps.
 
 Cas où l’arrêt ne part pas (le statut de l’intégration le dit) :
 
@@ -109,8 +110,9 @@ Cas où l’arrêt ne part pas (le statut de l’intégration le dit) :
   ce qu’un arrêt parte ou que cet appareil soit supprimé (ajoutez le nouveau depuis Découverte).
 
 Tant que `/data` n’est pas lu (stockage lent), le statut le dit : un arrêt cliqué en attendant part,
-mais n’y est pas gardé. Un arrêt gardé lu tard n’est pas envoyé si un mode ou un arrêt a été écrit
-depuis le démarrage (il est plus ancien).
+mais n’y est pas gardé. Un arrêt gardé lu tard n’est pas envoyé si un arrêt, ou un mode que le
+thermostat n’a pas refusé, a été écrit depuis le démarrage (il est plus ancien) ; il est alors retiré
+de `/data`.
 
 ## Limites connues
 

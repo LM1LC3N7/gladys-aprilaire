@@ -69,7 +69,9 @@ the click, or not at all. In auto mode, the thermostat may move the other setpoi
 deadband: it decides.
 
 While a stop is not confirmed, setpoints and the fan are refused; a new mode is accepted and ends the
-stop when it leaves (after lifting it in `/data`: if `/data` is not writable, nothing is sent).
+stop when it leaves (after lifting it in `/data`: if `/data` is not writable, nothing is sent) and the
+thermostat does not refuse it: refused (NACK code, "busy" included), the stop is held again as it was,
+in `/data` too, and checked at once.
 
 ## The stop (mode Off)
 
@@ -91,8 +93,9 @@ a restart.
   even read).
 - Not confirmed, it is checked every 15 s for 3 minutes then every minute, and sent again while the
   thermostat shows the mode of before, 3 times at most per click (a "busy" refusal of the thermostat
-  does not count). It ends when a read shows Off, when a new mode chosen in Gladys leaves, or when
-  another mode is read twice in a row (chosen at the thermostat); never by the time.
+  does not count). It ends when a read shows Off, when a new mode chosen in Gladys leaves and is not
+  refused by the thermostat, or when another mode is read twice in a row (chosen at the thermostat);
+  never by the time.
 
 When the stop does not leave (the status of the integration says so):
 
@@ -105,8 +108,8 @@ When the stop does not leave (the status of the integration says so):
   until a stop leaves or that device is deleted (add the new one from Discovery).
 
 While `/data` is not read (slow storage), the status says so: a stop clicked meanwhile leaves, but is
-not kept there. A stop kept there and read late is not sent if a mode or a stop was written since the
-start (it is older).
+not kept there. A stop kept there and read late is not sent if a stop, or a mode the thermostat did
+not refuse, was written since the start (it is older); it is then removed from `/data`.
 
 ## Known limits
 

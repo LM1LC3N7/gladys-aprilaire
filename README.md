@@ -35,12 +35,12 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (AprilaireApp)
 - **Commands** (`allow_commands`, off by default): mode heating / cooling / auto, fan, heating and
   cooling setpoints (4.5-32 °C: 40-99 °F converted exactly, within 4-32 °C; checked on the value and
   on the byte). Fresh read, the field alone written (others NULL), read back; one at a time; refused
-  while a stop is held, except a new mode, which ends it when it leaves.
+  while a stop is held, except a new mode, which ends it when it leaves and is not refused (NACK).
 - **Stop** (mode Off): never behind the option, a read, a command, a lost session or the
   configuration; first on the line (a silent read is cut after 1.5 s); held in `/data` until a read
   shows Off, sent again while the mode of before shows (three times per click), ended by a newer mode
-  from Gladys or another mode read twice in a row; never by the time; a stop never sent is never
-  given up.
+  from Gladys that the thermostat does not refuse or another mode read twice in a row; never by the
+  time; a stop never sent is never given up.
 
 Logic ported from [pyaprilaire](https://github.com/chamberlain2007/pyaprilaire) (MIT): see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

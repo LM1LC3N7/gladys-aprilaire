@@ -269,8 +269,8 @@ export const T = {
     ),
   stopGivenUp: (count) =>
     both(
-      `A stop (mode Off) was sent ${count} times and the thermostat still shows the mode of before: not sent again; check the thermostat. The other commands are refused until a read shows Off or a new mode is chosen.`,
-      `Un arrêt (mode Arrêt) a été envoyé ${count} fois et le thermostat montre toujours le mode d’avant : il n’est plus renvoyé ; vérifiez le thermostat. Les autres commandes sont refusées jusqu’à ce qu’une lecture montre l’arrêt ou qu’un nouveau mode soit choisi.`,
+      `A stop (mode Off) was sent ${count} times and the thermostat still shows the mode of before: not sent again; check the thermostat. The other commands are refused until a read shows Off or the thermostat accepts a new mode chosen in Gladys.`,
+      `Un arrêt (mode Arrêt) a été envoyé ${count} fois et le thermostat montre toujours le mode d’avant : il n’est plus renvoyé ; vérifiez le thermostat. Les autres commandes sont refusées jusqu’à ce qu’une lecture montre l’arrêt ou que le thermostat accepte un nouveau mode choisi dans Gladys.`,
     ),
   stopRefused: (reason) =>
     both(

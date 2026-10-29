@@ -34,7 +34,8 @@
 //   - only the field asked is written: the others are NULL ("unchanged");
 //   - refused while a stop is held, except a new mode, which ends the stop
 //     when it leaves (the stop lifted in /data first: /data not writable =
-//     nothing sent);
+//     nothing sent) and the thermostat does not refuse it (a NACK: the stop
+//     held again as it was);
 //   - one at a time; confirmed only by a read back equal to the value asked
 //     (a setpoint within 0.5 °C when the thermostat displays °F) and no NACK
 //     of the write; else "sent, without confirmation", a guard (90 s) and
@@ -52,9 +53,9 @@
 // 3 minutes, then every minute; sent again while the thermostat shows the
 // mode of before (three times at most per click; a write the thermostat
 // answered "busy" does not count); it ends only when a read shows Off, when
-// a newer mode command from Gladys leaves, or when another mode is read
-// twice in a row (set at the thermostat): never by the time. A stop never
-// sent is never given up.
+// a newer mode command from Gladys leaves and is not refused (NACK), or when
+// another mode is read twice in a row (set at the thermostat): never by the
+// time. A stop never sent is never given up.
 //
 // Times in memory (deadlines, guards, backoffs) are on a monotonic clock;
 // the wall clock (`now`) only for /data.
@@ -100,6 +101,7 @@ import { fileStore, normalizeMemory, serializeMemory } from './store.js';
 class Refusal extends Error {}
 
 const key = (domain, attribute) => `${domain}/${attribute}`;
+const nackText = (status) => `NACK 0x${status.toString(16).padStart(2, '0')}`;
 const C1 = key(DOMAIN.CONTROL, 1);
 const C3 = key(DOMAIN.CONTROL, 3);
 const C4 = key(DOMAIN.CONTROL, 4);
@@ -216,6 +218,10 @@ export class AprilaireApp {
     this.stopGuard = undefined;
     this.stopSending = false;
     this.stopWaiters = [];
+    /** A stop written, or a mode not refused, since the start: newer than a stop read late from /data. */
+    this.modeWrittenThisRun = false;
+    /** A mode written, its read back not in yet: { heldStop, late } (see modeLeaves). */
+    this.modeInFlight = undefined;
     this.writeSeq = 0;
     this.lastStopSeq = 0;
     this.published = undefined;
@@ -283,28 +289,43 @@ export class AprilaireApp {
       // A stop or a mode written since the start is newer than this stop
       // (clicked before the restart): it is dropped, never sent over it.
       this.logger.info('Aprilaire: a stop read late from /data is older than a mode written since');
+    } else if (kept && !this.stopGuard && this.modeInFlight) {
+      // A mode written, its read back not in yet: it decides (review r3, P1).
+      // Not refused, it is newer and this stop is dropped; refused (NACK),
+      // it never counted and this stop is held.
+      this.modeInFlight.late = kept;
     } else if (kept && !this.stopGuard) {
-      // Held from before the restart: checked (and written when needed) at once.
-      this.stopGuard = {
-        address: kept.address,
-        clickedAt: kept.clickedAt,
-        since: this.mono(),
-        mustWrite: !kept.written,
-        written: kept.written,
-        sentAt: undefined,
-        reasserts: kept.reasserts,
-        others: kept.others,
-        before: [...kept.before],
-        refused: undefined,
-        timer: undefined,
-      };
-      this.armStopCheck(0);
+      this.holdKeptStop(kept);
     }
-    // A stop dropped above implies a mode written, so a connection: its newer
-    // attempt rewrites /data, without that stop.
-    if (this.stopGuard || current.attemptAt > read.attemptAt || current.address !== read.address) {
+    // A stop kept there: /data rewritten as decided above, at once (a stop
+    // dropped is gone even when the attempt time read is not older: a clock
+    // set back makes it now).
+    if (
+      kept ||
+      this.stopGuard ||
+      current.attemptAt > read.attemptAt ||
+      current.address !== read.address
+    ) {
       this.persist();
     }
+  }
+
+  /** A stop kept in /data from before the restart: held, checked (and written when needed) at once. */
+  holdKeptStop(kept) {
+    this.stopGuard = {
+      address: kept.address,
+      clickedAt: kept.clickedAt,
+      since: this.mono(),
+      mustWrite: !kept.written,
+      written: kept.written,
+      sentAt: undefined,
+      reasserts: kept.reasserts,
+      others: kept.others,
+      before: [...kept.before],
+      refused: undefined,
+      timer: undefined,
+    };
+    this.armStopCheck(0);
   }
 
   /** Saves the memory; resolves false when /data refused it (or cannot be read). */
@@ -1307,6 +1328,7 @@ export class AprilaireApp {
       }
     }
     let written;
+    let mode;
     try {
       written = await this.line(
         {
@@ -1319,8 +1341,7 @@ export class AprilaireApp {
             if (heldStop ? this.stopGuard !== heldStop : this.stopGuard) {
               throw this.refusal(ERRORS.stopHeld);
             }
-            if (heldStop) this.dropStopGuard({ persist: false });
-            if (change.field === 'mode') this.modeWrittenThisRun = true;
+            if (change.field === 'mode') mode = this.modeLeaves(heldStop);
             this.writeSeq += 1;
             entry.sentSeq = this.writeSeq;
             entry.written = true;
@@ -1330,6 +1351,9 @@ export class AprilaireApp {
         session,
       );
     } catch (err) {
+      // Past `beforeSend`, only the socket refusing the bytes rejects a
+      // write: they never left, the mode does not count.
+      if (mode) this.modeSettled(mode, false);
       if (heldStop && this.stopGuard === heldStop) this.persist();
       if (err instanceof Refusal) throw err;
       if (!entry.written) throw this.refusal(ERRORS.notSent(errorReason(err)));
@@ -1346,17 +1370,22 @@ export class AprilaireApp {
         session,
       );
     } catch (err) {
+      // No read back: the NACK of the write, when it came, still says it was refused.
+      const refusedWith = session.nackOf(written.sequence);
+      if (mode) this.modeSettled(mode, refusedWith === undefined);
+      if (refusedWith !== undefined) throw this.refusal(ERRORS.refused(nackText(refusedWith)));
       this.unconfirmed(plan);
       throw this.refusal(ERRORS.sentUnconfirmed(errorReason(err)));
     }
+    const nack = session.nackOf(written.sequence);
+    // First: a stop set aside is never left out.
+    if (mode) this.modeSettled(mode, nack === undefined);
     this.keep(C1, back, backStartedAt);
     this.observe(back, backStartedAt);
     this.publishValues([C1]);
     this.flush();
-    const nack = session.nackOf(written.sequence);
     if (nack !== undefined) {
-      const reason = `NACK 0x${nack.toString(16).padStart(2, '0')}`;
-      throw this.refusal(ERRORS.refused(reason));
+      throw this.refusal(ERRORS.refused(nackText(nack)));
     }
     if (this.lastStopSeq > entry.sentSeq) {
       throw this.refusal(ERRORS.superseded);
@@ -1769,12 +1798,62 @@ export class AprilaireApp {
     return g.reasserts < TIMINGS.stopReasserts ? 'resend' : 'wait';
   }
 
-  dropStopGuard({ persist = true } = {}) {
+  dropStopGuard() {
     const g = this.stopGuard;
     if (!g) return;
     if (g.timer) this.timers.clearTimeout(g.timer);
     this.stopGuard = undefined;
-    if (persist) this.persist();
+    this.persist();
+    this.updateStatus().catch(() => {});
+  }
+
+  /**
+   * A mode leaves (right before its bytes). It counts against a stop (the one
+   * held, or one read late from /data) only once its read back shows no NACK
+   * (review r3, P1: a refusal is not a command that left). Meanwhile the stop
+   * held is set aside, already lifted in /data: never written over the mode,
+   * nor checked.
+   */
+  modeLeaves(heldStop) {
+    if (heldStop) {
+      if (heldStop.timer) this.timers.clearTimeout(heldStop.timer);
+      heldStop.timer = undefined;
+      this.stopGuard = undefined;
+    }
+    this.modeInFlight = { heldStop, late: undefined };
+    return this.modeInFlight;
+  }
+
+  /**
+   * The outcome of a mode past `beforeSend`: `counts` when it left and was
+   * not refused (no NACK, or no answer at all); else refused by the
+   * thermostat (NACK) or its bytes refused by the socket. Then the stop set
+   * aside is held again as it was (`mustWrite` included), in /data too, and
+   * checked at once; so is a stop read late from /data meanwhile. A stop
+   * clicked since holds its own guard: nothing is put back over it.
+   */
+  modeSettled(mode, counts) {
+    if (this.modeInFlight === mode) this.modeInFlight = undefined;
+    if (counts) {
+      this.modeWrittenThisRun = true;
+      if (mode.late) {
+        // Already gone from /data: applyMemory rewrote it without this stop.
+        this.logger.info(
+          'Aprilaire: a stop read late from /data is older than a mode written since',
+        );
+      }
+      if (mode.heldStop) this.updateStatus().catch(() => {});
+      return;
+    }
+    if (this.stopGuard || (!mode.heldStop && !mode.late)) return;
+    if (mode.heldStop) {
+      this.stopGuard = mode.heldStop;
+      this.armStopCheck(0);
+    } else {
+      this.holdKeptStop(mode.late);
+    }
+    this.logger.info('Aprilaire: the mode was refused by the thermostat: the stop is held again');
+    this.persist();
     this.updateStatus().catch(() => {});
   }
 

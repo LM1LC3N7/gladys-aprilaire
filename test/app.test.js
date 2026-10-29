@@ -851,6 +851,10 @@ test('r1 I5: a mode chosen at the thermostat while a resend is read back ends th
     return handle(frame);
   };
   await ctx.press('mode', OFF, 5 * SECOND);
+  // The read back of the resend (check at 15 s) counts as one read of the new
+  // mode; the follow-up read 5 s later is the second in a row (r2 list, R7).
+  await ctx.advance(17 * SECOND, 500);
+  assert.equal(ctx.app.stopGuard, undefined, 'ended by the follow-up read');
   await ctx.advance(10 * MINUTE, 500);
   assert.ok(changedAt !== undefined, 'a resend happened');
   const after = ctx.th.log.slice(changedAt).filter((r) => r.action === 1);
@@ -1249,4 +1253,279 @@ test('r2 N2: a mode command alone (no stop) since the start also drops a stop re
   await ctx.advance(3 * MINUTE, 500);
   assert.equal(th.state.mode, 2, 'heating kept');
   assert.equal(controlWrites(th).length, 1);
+});
+
+// r3 P1: a mode refused by the thermostat (NACK) is not a command that left.
+const offWrites = (th) => controlWrites(th).filter((w) => w.data[0] === 1);
+const lateStopStore = (attemptAt = NOW - 10 * MINUTE) => {
+  const store = memoryStore({
+    attemptAt,
+    address: `${HOST}:7000`,
+    stop: { address: `${HOST}:7000`, written: false, reasserts: 0 },
+  });
+  store.loadGate = new Promise((resolve) => {
+    store.release = resolve;
+  });
+  return store;
+};
+
+test('r3 P1 (b): a mode refused by the thermostat (NACK) never drops a stop read late from /data', async (t) => {
+  const store = lateStopStore();
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ store, clock, th, config: ALLOW });
+  t.after(ctx.stop);
+  th.nack.write = 0x10;
+  const cool = await ctx.press('mode', COOLING);
+  assert.equal(cool.success, false);
+  assert.match(text(cool), /refusé la commande \(NACK 0x10\)/);
+  assert.equal(th.state.mode, 2, 'not applied');
+  store.release();
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(offWrites(th).length, 1, 'the stop of /data written');
+  assert.equal(th.state.mode, 1);
+  assert.equal(ctx.app.stopGuard, undefined, 'and confirmed');
+  assert.equal(store.data.stop, undefined);
+});
+
+test('r3 P1 (c): a mode answered "busy" while a stop never applied is held: the stop held again as it was, then written', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  ctx.th.nack.write = 0x03;
+  ctx.th.nackSticky = true;
+  const off = await ctx.press('mode', OFF, SECOND);
+  assert.equal(off.success, false);
+  const held = ctx.app.stopGuard;
+  assert.ok(held?.mustWrite, 'busy: still to write');
+  const cool = await ctx.press('mode', COOLING, 3 * SECOND);
+  assert.equal(cool.success, false);
+  assert.match(text(cool), /refusé la commande \(NACK 0x03\)/);
+  assert.equal(ctx.app.stopGuard, held, 'the same stop held again');
+  assert.ok(held.mustWrite, 'still to write');
+  assert.equal(ctx.store.data.stop?.written, false, 'in /data again, as never written');
+  assert.match(status(ctx), /Un arrêt \(mode Arrêt\) est gardé/);
+  ctx.th.nackSticky = false;
+  delete ctx.th.nack.write;
+  await ctx.advance(20 * SECOND, 100);
+  assert.equal(ctx.th.state.mode, 1, 'the stop written at the next check');
+  assert.equal(ctx.app.stopGuard, undefined);
+  assert.equal(ctx.store.data.stop, undefined);
+});
+
+test('r3 P1: a mode refused, its read back lost: the NACK still says so, the stop held again', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  await ctx.press('mode', OFF, 5 * SECOND);
+  const held = ctx.app.stopGuard;
+  assert.ok(held);
+  ctx.th.nack.write = 0x10;
+  const writes = ctx.th.writes().length;
+  let silenced = 0;
+  // The read back of the mode only is never answered.
+  ctx.th.silentFor = (frame) =>
+    frame.action === 2 &&
+    frame.domain === 2 &&
+    frame.attribute === 1 &&
+    ctx.th.writes().length > writes &&
+    silenced++ === 0;
+  const cool = await ctx.press('mode', COOLING, 4 * SECOND);
+  assert.equal(silenced > 0, true, 'the read back lost');
+  assert.equal(cool.success, false);
+  assert.match(text(cool), /refusé la commande \(NACK 0x10\)/);
+  assert.equal(ctx.app.stopGuard, held, 'held again');
+  assert.ok(ctx.store.data.stop, 'in /data again');
+});
+
+test('r3 P1: a mode that left without any answer counts: the stop it ends is never written over it', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  ctx.th.nack.write = 0x03;
+  await ctx.press('mode', OFF, SECOND);
+  assert.ok(ctx.app.stopGuard?.mustWrite, 'busy: still to write');
+  const writes = ctx.th.writes().length;
+  let silenced = 0;
+  ctx.th.silentFor = (frame) =>
+    frame.action === 2 &&
+    frame.domain === 2 &&
+    frame.attribute === 1 &&
+    ctx.th.writes().length > writes &&
+    silenced++ === 0;
+  const cool = await ctx.press('mode', COOLING, 4 * SECOND);
+  assert.match(text(cool), /sans confirmation/);
+  assert.equal(ctx.app.stopGuard, undefined, 'ended: the mode left');
+  assert.doesNotMatch(status(ctx), /Un arrêt/, 'the status says so at once');
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(ctx.th.state.mode, 3, 'cooling kept');
+  assert.equal(offWrites(ctx.th).length, 1, 'only the stop answered "busy"');
+  assert.equal(ctx.store.data.stop, undefined);
+});
+
+test('r3 P1: a mode whose bytes the socket refused never left: the stop held again, then written', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  ctx.th.nack.write = 0x03;
+  await ctx.press('mode', OFF, SECOND);
+  const held = ctx.app.stopGuard;
+  assert.ok(held?.mustWrite, 'busy: still to write');
+  const socket = ctx.app.conn.session.socket;
+  const write = socket.write.bind(socket);
+  let refused = 0;
+  socket.write = (bytes) => {
+    // The write of the mode (action 1, cooling): the socket throws, nothing leaves.
+    if (bytes[4] === 1 && bytes[7] === 3) {
+      refused += 1;
+      throw new Error('EPIPE');
+    }
+    return write(bytes);
+  };
+  await ctx.press('mode', COOLING, 3 * SECOND);
+  assert.equal(refused, 1, 'the mode never left');
+  assert.equal(ctx.th.state.mode, 2);
+  assert.equal(ctx.app.stopGuard, held, 'the stop held again');
+  await ctx.advance(30 * SECOND, 100);
+  assert.equal(ctx.th.state.mode, 1, 'the stop written on the next session');
+});
+
+test('r3 P1: a stop clicked while a refused mode is read back keeps its own guard (nothing put back over it)', async (t) => {
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ config: ALLOW, clock, th });
+  t.after(ctx.stop);
+  th.applyWrites = false;
+  await ctx.press('mode', OFF, 5 * SECOND);
+  await ctx.advance(2 * MINUTE, 500);
+  assert.match(status(ctx), /envoyé 4 fois/, 'given up: the checks write it no more');
+  th.applyWrites = true;
+  th.nack.write = 0x10;
+  th.delay = 1000;
+  const writes = th.writes().length;
+  const cool = ctx.fire('mode', COOLING);
+  for (let i = 0; i < 400 && th.writes().length === writes; i += 1) await ctx.advance(10, 10);
+  assert.equal(th.writes().length, writes + 1, 'the mode written, its read back not in yet');
+  const off = ctx.fire('mode', OFF);
+  await ctx.advance(6 * SECOND, 50);
+  assert.equal((await cool).success, false);
+  assert.equal((await off).success, true, 'the new click written and confirmed');
+  assert.equal(th.state.mode, 1);
+});
+
+test('r3 P1: a stop read late from /data while a mode is read back: the mode refused, the stop held and written', async (t) => {
+  const store = lateStopStore();
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ store, clock, th, config: ALLOW });
+  t.after(ctx.stop);
+  th.nack.write = 0x10;
+  th.delay = 1000;
+  const cool = ctx.fire('mode', COOLING);
+  for (let i = 0; i < 400 && th.writes().length === 0; i += 1) await ctx.advance(10, 10);
+  assert.equal(th.writes().length, 1, 'the mode written, its read back not in yet');
+  store.release();
+  await ctx.advance(5 * SECOND, 50);
+  assert.equal((await cool).success, false);
+  th.delay = 20;
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(offWrites(th).length, 1, 'the stop of /data written');
+  assert.equal(th.state.mode, 1);
+  assert.equal(store.data.stop, undefined, 'confirmed');
+});
+
+test('r3 P1: a stop read late from /data while a mode is read back: the mode applied, the stop dropped', async (t) => {
+  const store = lateStopStore();
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ store, clock, th, config: ALLOW });
+  t.after(ctx.stop);
+  th.delay = 1000;
+  const cool = ctx.fire('mode', COOLING);
+  for (let i = 0; i < 400 && th.writes().length === 0; i += 1) await ctx.advance(10, 10);
+  assert.equal(th.writes().length, 1, 'the mode written, its read back not in yet');
+  store.release();
+  await ctx.advance(5 * SECOND, 50);
+  assert.equal((await cool).success, true);
+  th.delay = 20;
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(offWrites(th).length, 0, 'the older stop never written over it');
+  assert.equal(th.state.mode, 3);
+  assert.equal(store.data.stop, undefined, 'removed from /data');
+  assert.ok(ctx.lines.some((l) => /read late from \/data is older/.test(l)));
+});
+
+test('r3 m1 (T3): a stop written since the start also drops a stop read late from /data', async (t) => {
+  const store = lateStopStore();
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ store, clock, th });
+  t.after(ctx.stop);
+  assert.equal((await ctx.press('mode', OFF)).success, true);
+  th.state.mode = 2; // heating chosen at the thermostat afterwards
+  store.release();
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(th.state.mode, 2, 'the choice made at the thermostat kept');
+  assert.equal(offWrites(th).length, 1, 'the older stop never written');
+  assert.equal(store.data.stop, undefined);
+});
+
+test('r3 m1 (T6): deleting the device whose stop was refused clears the status, another device does not', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.state.mac = [0x0a, 0, 0, 0, 0, 1];
+  ctx.th.hangUp();
+  await ctx.advance(40 * SECOND, 500);
+  ctx.th.hangUp(); // a second session with the other thermostat
+  await ctx.advance(40 * SECOND, 500);
+  assert.equal((await ctx.press('mode', OFF)).success, false);
+  assert.match(status(ctx), /a été refusé/);
+  await ctx.gladys.fake.deviceDeleted({
+    external_id: 'ext:test-integration:aprilaire:0a0000000001',
+  });
+  await ctx.advance(SECOND, 100);
+  assert.match(status(ctx), /a été refusé/, 'another device deleted: still said');
+  await ctx.gladys.fake.deviceDeleted(
+    ctx.gladys.fake.devices.find((d) => d.external_id === DEVICE),
+  );
+  await ctx.advance(SECOND, 100);
+  assert.doesNotMatch(status(ctx), /a été refusé/);
+});
+
+test('r3 P1: the session lost while a refused mode is read back: the stop held again, back in /data at once', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  await ctx.press('mode', OFF, 5 * SECOND);
+  const held = ctx.app.stopGuard;
+  assert.ok(held);
+  ctx.th.nack.write = 0x10;
+  const writes = ctx.th.writes().length;
+  ctx.th.silentFor = (frame) =>
+    frame.action === 2 &&
+    frame.domain === 2 &&
+    frame.attribute === 1 &&
+    ctx.th.writes().length > writes;
+  const cool = ctx.fire('mode', COOLING);
+  for (let i = 0; i < 400 && ctx.th.writes().length === writes; i += 1) await ctx.advance(10, 10);
+  await ctx.advance(200, 10); // the NACK in, the read back unanswered
+  ctx.th.down = true;
+  ctx.th.hangUp();
+  await ctx.advance(SECOND, 10);
+  assert.match(text(await cool), /refusé la commande \(NACK 0x10\)/);
+  assert.equal(ctx.app.stopGuard, held, 'held again');
+  assert.ok(ctx.store.data.stop, 'back in /data at once, no session needed');
+});
+
+test('r3: a stop read late from /data and dropped leaves /data even when the attempt time read is not older', async (t) => {
+  // A clock set back: the attempt time of /data is in the future, read as now.
+  const store = lateStopStore(NOW + 24 * 60 * MINUTE);
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  th.state.mode = 1;
+  const ctx = await setup({ store, clock, th, config: ALLOW });
+  t.after(ctx.stop);
+  assert.equal((await ctx.press('mode', HEATING)).success, true);
+  store.release();
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(th.state.mode, 2, 'heating kept');
+  assert.equal(controlWrites(th).length, 1);
+  assert.equal(store.data.stop, undefined, 'gone from /data: a restart never sends it');
 });
