@@ -1,6 +1,6 @@
 {
   "name": "gladys-aprilaire",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for Aprilaire 8800-series thermostats (temperature, humidity, setpoints, mode, fan, humidity and air equipment) over their local Home Automation protocol. Unofficial, not affiliated with Aprilaire.",
   "type": "module",

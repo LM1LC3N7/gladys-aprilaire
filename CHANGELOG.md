@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-29
+
 ### Added
 
 - Aprilaire 8800-series Wi-Fi thermostats over their local "Home Automation" protocol (one TCP
@@ -22,3 +24,6 @@ the notes of the version's GitHub Release.
 - The stop (mode Off), never behind the option: first on the line, kept in `/data` until confirmed,
   sent again at a restart before the configuration is read.
 - "Test the connection" button; status and transport badge.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-aprilaire/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-aprilaire/releases/tag/v0.1.1
