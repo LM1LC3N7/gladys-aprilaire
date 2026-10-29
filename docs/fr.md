@@ -1,67 +1,108 @@
-# Template de démonstration
+# Thermostat Aprilaire (protocole « Home Automation »)
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Cette intégration affiche dans Gladys un thermostat Wi-Fi **Aprilaire série 8800** (8810, 8820, 8830,
+8840, 8910W, et le 6000 de régulation par zones ; selon des utilisateurs, le 8920W ne propose
+pas le mode « Automation ») par son protocole local
+« Home Automation », publié par Aprilaire : une connexion TCP sur votre réseau, sans cloud.
 
-## Ce que vous obtenez
+**Jamais testé avec un vrai appareil** : l’intégration a été écrite d’après la bibliothèque
+pyaprilaire (utilisée par Home Assistant) et testée sur un faux thermostat. Sans lien avec Aprilaire.
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+## Ce qu’il faut
+
+- Le thermostat en type de connexion **« Automation »** (menu installateur, « Connection Type ») ;
+  certains modèles vendus comme domotiques ne le proposent pas et ne sont pas pris en charge.
+- Une adresse fixe pour le thermostat dans votre routeur.
+- **Une seule connexion domotique** : le thermostat n’accepte qu’une connexion « Automation » à la
+  fois (l’application Aprilaire n’est pas concernée). Deux domotiques en même temps peuvent le faire
+  cesser de répondre jusqu’à ce qu’on coupe son alimentation. N’utilisez pas en même temps Home
+  Assistant ou un autre système sur ce thermostat. L’intégration n’ouvre elle-même qu’une seule
+  connexion, gardée ouverte, et n’en rouvre une qu’après la fermeture de la précédente.
+- Le protocole n’a **pas de mot de passe** : gardez le thermostat sur un réseau de confiance.
 
 ## Configuration
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+- **Adresse du thermostat** : adresse IPv4 ou nom d’hôte, port 7000 par défaut (ajoutez « :8000 »
+  par exemple si le vôtre en utilise un autre).
+- **Autoriser les commandes** : désactivé par défaut. Voir plus bas.
+- **Intervalle de rafraîchissement** : 60 s par défaut (30 s à 10 min). Le thermostat envoie aussi
+  ses changements au fil de l’eau.
+- **Langue** des noms, des options et des textes.
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+Après l’enregistrement, ajoutez le thermostat depuis l’onglet **Découverte**. L’appareil est reconnu
+par son **adresse MAC** : il reste le même si son adresse IP change ; un autre thermostat à la même
+adresse est un autre appareil (le statut le dit).
 
-## Actions
+## Ce que vous voyez
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+- Température et humidité (sondes de régulation), température et humidité extérieures si une sonde
+  les donne. Une sonde en erreur, absente ou hors plage n’est jamais publiée comme une mesure.
+- Consignes de chauffage et de climatisation, en °C (le protocole transporte toujours des °C, quel
+  que soit l’affichage du thermostat ; Gladys convertit pour ceux qui préfèrent les °F).
+- Mode (arrêt, chauffage, climatisation, auto selon le thermostat ; le chauffage d’appoint est montré
+  comme « chauffage »), ventilateur (auto, marche, brassage), fonctionnement (au repos, chauffage,
+  climatisation), ventilateur en marche.
+- Dérogation (aucune, temporaire, permanente, absence, vacances), erreur du thermostat (E1 à E8).
+- Selon l’équipement : humidificateur, déshumidificateur, ventilation (air neuf), purificateur d’air,
+  chacun en texte (état, consigne ou mode).
 
-## Scènes
+Rien n’est affiché tant que l’adresse MAC n’est pas lue dans la session. Une valeur est publiée
+quand elle est lue (ou quand vous ajoutez l’appareil, si elle a été lue moins de 2 minutes avant) ;
+jamais une valeur de plus de 2 minutes.
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+## Les commandes
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+Avec **Autoriser les commandes** activé, Gladys peut régler :
 
-## Tableau de bord
+- le **mode** chauffage, climatisation ou auto (seulement ceux que le thermostat propose) ;
+- le **ventilateur** (auto, marche, brassage) ;
+- les **consignes** de chauffage et de climatisation, de **4,5 à 32 °C** par pas de 0,5 °C. Ces
+  bornes viennent de la plage du fabricant (40 à 99 °F, « 4 à 32 °C ») : les °F convertis
+  exactement, ramenés à l’intérieur sur le pas de 0,5 °C, puis dans la plage en °C. Une valeur hors
+  bornes est refusée, jamais ramenée dans la plage ; l’octet envoyé est vérifié une seconde fois.
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+Chaque commande relit d’abord l’état (une lecture partie après le clic), n’écrit que le champ demandé
+(les autres restent « inchangés » dans la trame), puis relit : elle n’est réussie que si la relecture
+montre la valeur demandée (à 0,5 °C près pour une consigne quand le thermostat affiche des °F : il les
+garde en °F entiers) et si le thermostat ne l’a pas refusée. Sinon : « envoyée, sans confirmation »,
+puis deux relectures 5 s et 20 s plus tard. Les commandes passent une à une ; une commande en attente
+derrière d’autres (une scène) part au plus tard 15 s après le clic, ou pas du tout. En mode auto, le
+thermostat peut déplacer l’autre consigne pour garder son écart : c’est lui qui décide.
 
-## Dépannage
+Pendant qu’un arrêt n’est pas confirmé, les consignes et le ventilateur sont refusés ; un nouveau mode
+est accepté et lève l’arrêt quand il part (après l’avoir levé dans `/data` : si `/data` n’est pas
+inscriptible, rien n’est envoyé).
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+## L’arrêt (mode Arrêt)
+
+Choisir le mode **Arrêt** n’est soumis à rien : ni à l’option « Autoriser les commandes », ni à une
+lecture préalable, ni à une commande ou une lecture en cours, ni à une session coupée, ni à un
+thermostat jamais lu, ni à une configuration pas encore lue après un redémarrage.
+
+- Il part en premier : toute commande cliquée avant lui et pas encore partie est abandonnée ; une
+  lecture en cours qui n’a rien reçu depuis 1,5 s est coupée (la session est fermée, puis rouverte
+  pour l’arrêt).
+- Il est écrit sans lecture avant, puis relu. Il part vers l’adresse de la configuration, sans
+  vérifier l’identité du thermostat.
+- Sans session (thermostat injoignable), il est **gardé** (en mémoire et dans `/data`) et part dès
+  que le thermostat répond ; une nouvelle connexion est tentée au clic, puis au moins chaque minute.
+  Un arrêt jamais parti n’est jamais abandonné, même après un redémarrage (il part alors avant même la
+  lecture de la configuration).
+- Non confirmé, il est vérifié toutes les 15 s pendant 3 minutes puis chaque minute, et renvoyé tant
+  que le thermostat montre le mode d’avant, 3 fois au plus par clic (un refus « occupé » du
+  thermostat ne compte pas). Il prend fin quand une lecture montre l’arrêt, quand un nouveau mode
+  choisi dans Gladys part, ou quand un autre mode est lu deux fois de suite (choisi sur le
+  thermostat) ; jamais avec le temps.
+
+Cas où l’arrêt ne part pas (le statut de l’intégration le dit) :
+
+- aucune adresse valide dans la configuration (gardé, il part dès qu’une adresse est enregistrée) ;
+- le thermostat ne répond pas ou refuse la connexion (gardé, il part dès qu’il répond) ;
+- le thermostat refuse l’écriture (code NACK affiché ; retenté aux vérifications suivantes).
+
+## Limites connues
+
+- Jamais testé avec un vrai appareil ; aucun thermostat nord-américain n’était disponible.
+- Les consignes d’humidité, l’air neuf, le purificateur, les dérogations et le programme sont
+  seulement affichés dans cette version.
+- Un seul thermostat par installation de l’intégration.

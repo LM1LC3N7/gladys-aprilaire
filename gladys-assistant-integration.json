@@ -1,177 +1,137 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "Aprilaire",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "Aprilaire 8800-series thermostats over their local Home Automation protocol.",
+    "fr": "Thermostats Aprilaire série 8800 par leur protocole local « Home Automation »."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-aprilaire:0.1.0",
   "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-aprilaire/main/cover.png",
+  "categories": ["climate"],
+  "transports": ["local"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": {
+        "en": "Your Aprilaire thermostat",
+        "fr": "Votre thermostat Aprilaire"
+      },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Shows an Aprilaire 8800-series Wi-Fi thermostat (8810, 8820, 8830, 8840, 8910W…) in Gladys over its local \"Home Automation\" protocol, without any cloud: temperature, humidity, setpoints, mode, fan, hold, humidifier, dehumidifier, fresh air, air cleaner, errors. At the thermostat, set the connection type to \"Automation\" (contractor menu), give it a fixed address in your router, enter that address and save; then add it from the Discovery tab. The thermostat takes ONE automation connection: never two home automation systems on it. Modes, fan and setpoints change only if you allow the commands below; turning off (mode Off) never depends on that option (see the guide for when it cannot leave). The protocol has no password: keep the thermostat on a trusted network. Never tested with a real device. Not affiliated with Aprilaire.",
+        "fr": "Affiche un thermostat Wi-Fi Aprilaire série 8800 (8810, 8820, 8830, 8840, 8910W…) dans Gladys par son protocole local « Home Automation », sans cloud : température, humidité, consignes, mode, ventilateur, dérogation, humidificateur, déshumidificateur, air neuf, purificateur, erreurs. Sur le thermostat, réglez le type de connexion sur « Automation » (menu installateur), donnez-lui une adresse fixe dans votre routeur, saisissez cette adresse et enregistrez ; ajoutez-le ensuite depuis l’onglet Découverte. Le thermostat n’accepte QU’UNE connexion domotique : jamais deux domotiques dessus. Modes, ventilateur et consignes ne changent que si vous autorisez les commandes ci-dessous ; l’arrêt (mode Arrêt) ne dépend jamais de cette option (voir le guide pour les cas où il ne peut pas partir). Le protocole n’a pas de mot de passe : gardez le thermostat sur un réseau de confiance. Jamais testé avec un vrai appareil. Sans lien avec Aprilaire."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-aprilaire/blob/main/docs/fr.md",
+          "label": {
+            "en": "Guide (French)",
+            "fr": "Guide (français)"
+          }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-aprilaire/blob/main/docs/en.md",
+          "label": {
+            "en": "Guide (English)",
+            "fr": "Guide (anglais)"
+          }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
-      "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
+      "key": "address",
+      "type": "string",
+      "label": {
+        "en": "Address of the thermostat",
+        "fr": "Adresse du thermostat"
       },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
+      "description": {
+        "en": "IPv4 address or host name; port 7000 unless you add one (\"192.168.1.40:8000\"). The device is known by its MAC address.",
+        "fr": "Adresse IPv4 ou nom d’hôte ; port 7000 sauf si vous en ajoutez un (« 192.168.1.40:8000 »). L’appareil est reconnu par son adresse MAC."
+      },
+      "placeholder": {
+        "en": "192.168.1.40",
+        "fr": "192.168.1.40"
+      },
       "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
+      "default": ""
     },
     {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
-      "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
+      "key": "allow_commands",
+      "type": "boolean",
+      "label": {
+        "en": "Allow the commands",
+        "fr": "Autoriser les commandes"
       },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
+      "description": {
+        "en": "Off by default: Gladys changes nothing, except the stop (mode Off), which never depends on this option. On: Gladys may also set the mode (heating, cooling, auto), the fan and the setpoints (4.5 to 32 °C, the range of the thermostat).",
+        "fr": "Désactivé par défaut : Gladys ne change rien, sauf l’arrêt (mode Arrêt), qui ne dépend jamais de cette option. Activé : Gladys peut aussi régler le mode (chauffage, climatisation, auto), le ventilateur et les consignes (4,5 à 32 °C, la plage du thermostat)."
+      },
+      "required": false,
+      "default": false
     },
     {
-      "key": "unit",
+      "key": "poll_interval",
+      "type": "number",
+      "label": {
+        "en": "Refresh interval (s)",
+        "fr": "Intervalle de rafraîchissement (s)"
+      },
+      "description": {
+        "en": "How often the values are read, in seconds; the thermostat also sends its changes as they happen.",
+        "fr": "Fréquence de lecture des valeurs, en secondes ; le thermostat envoie aussi ses changements au fil de l’eau."
+      },
+      "required": false,
+      "default": 60,
+      "min": 30,
+      "max": 600
+    },
+    {
+      "key": "language",
       "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
-      "required": false,
-      "default": "celsius",
-      "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
-      ]
-    },
-    {
-      "key": "poll_frequency",
-      "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
+      "label": {
+        "en": "Language of the feature names",
+        "fr": "Langue des noms des fonctionnalités"
+      },
       "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
+        "en": "Used for the names of the device and features added from now on, for the options, the texts and the command errors.",
+        "fr": "Sert aux noms de l’appareil et des fonctionnalités ajoutés désormais, aux options, aux textes et aux erreurs des commandes."
       },
       "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
+      "default": "fr",
+      "options": [
+        {
+          "value": "fr",
+          "label": {
+            "en": "French",
+            "fr": "Français"
+          }
+        },
+        {
+          "value": "en",
+          "label": {
+            "en": "English",
+            "fr": "Anglais"
+          }
+        }
+      ]
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
+      "key": "test_connection",
+      "label": {
+        "en": "Test the connection",
+        "fr": "Tester la connexion"
+      },
+      "description": {
+        "en": "Shows the state of the session; opens one when none is open and the last attempt is older than the interval (never sooner).",
+        "fr": "Affiche l’état de la session ; en ouvre une si aucune n’est ouverte et que le dernier essai date de plus d’un intervalle (jamais plus tôt)."
+      },
       "timeout_seconds": 30
-    },
-    {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
-      "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
     }
   ]
 }
