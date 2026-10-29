@@ -153,6 +153,8 @@ export const TIMINGS = {
    * leaves a healthy answer its time.
    */
   stuckRead: 1_500,
+  /** /data read at the start: awaited this long at most (read late, it is merged). */
+  dataLoad: SECOND,
   /** A socket that never says 'close' is given up after this long (the next one may open). */
   closeWait: 2 * SECOND,
   /** Reconnections after a session was lost or refused: never a loop. */
@@ -186,14 +188,13 @@ export const TIMINGS = {
   /**
    * A stop not confirmed is held: checked every 15 s for 3 min after the
    * click, then every minute; sent again when the thermostat still shows the
-   * mode of before, 5 s at least after the last write, three times at most
+   * mode of before (by the checks only), three times at most
    * per click; another mode read twice in a row (set at the thermostat) ends
    * it, never the time.
    */
   stopRetry: 15 * SECOND,
   stopFastChecks: 3 * MINUTE,
   stopSlowRetry: MINUTE,
-  applyDelay: 5 * SECOND,
   stopReasserts: 3,
   stopOtherReads: 2,
   /** getConfig() failing: tried again 5 s, 10 s, 30 s, then every minute, without end. */

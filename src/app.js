@@ -155,7 +155,7 @@ const SOURCES = {
   [F.ERROR]: [ST8],
 };
 
-const PRIORITY = { stop: 0, command: 1, check: 2, read: 3 };
+export const PRIORITY = { stop: 0, command: 1, check: 2, read: 3 };
 
 const defaultTimers = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -186,7 +186,8 @@ export class AprilaireApp {
     this.configLoaded = false;
     this.latestAllow = undefined;
     this.memory = normalizeMemory(null, now());
-    this.memoryLoaded = false;
+    this.memoryLoading = undefined;
+    this.memoryReady = false;
     this.memoryUnreadable = false;
     this.generation = 0;
     this.started = false;
@@ -229,25 +230,53 @@ export class AprilaireApp {
 
   // --- /data ---------------------------------------------------------------------
 
-  /** Loads /data once; an unreadable file is never overwritten afterwards. */
+  /**
+   * Loads /data, awaited 1 s at most: a slow or frozen /data never holds the
+   * configuration nor a stop. Until it is read, nothing is written to it
+   * (never a guess over it); read late, it is merged (a stop kept there is
+   * checked at once) and written again when needed.
+   */
   async loadMemory() {
-    if (this.memoryLoaded) return;
-    this.memoryLoaded = true;
-    let loaded;
-    try {
-      loaded = await this.store.load();
-    } catch {
-      loaded = { unreadable: true };
+    if (!this.memoryLoading) {
+      this.memoryLoading = Promise.resolve()
+        .then(() => this.store.load())
+        .catch(() => ({ unreadable: true }))
+        .then((loaded) => this.applyMemory(loaded));
     }
+    let timer;
+    await Promise.race([
+      this.memoryLoading,
+      new Promise((resolve) => {
+        timer = this.timers.setTimeout(resolve, TIMINGS.dataLoad);
+      }),
+    ]);
+    this.timers.clearTimeout(timer);
+    if (!this.memoryReady && !this.memoryUnreadable && !this.memorySlowSaid) {
+      this.memorySlowSaid = true;
+      this.logger.warn('Aprilaire: /data is slow to read: going on without it meanwhile');
+    }
+  }
+
+  applyMemory(loaded) {
     if (loaded?.unreadable) {
       this.memoryUnreadable = true;
       this.logger.warn('Aprilaire: /data cannot be read: it is never overwritten');
+      this.updateStatus().catch(() => {});
       return;
     }
-    this.memory = normalizeMemory(loaded?.data ?? null, this.now());
-    this.savedAttemptAt = this.memory.attemptAt;
-    const kept = this.memory.stop;
-    if (kept) {
+    const read = normalizeMemory(loaded?.data ?? null, this.now());
+    const current = this.memory;
+    // What this run learnt meanwhile wins; the rest comes from /data.
+    this.memory = {
+      attemptAt: Math.max(read.attemptAt, current.attemptAt),
+      address: this.configLoaded ? current.address : (current.address ?? read.address),
+      identity: current.identity ?? read.identity,
+      stop: undefined,
+    };
+    this.savedAttemptAt = read.attemptAt;
+    this.memoryReady = true;
+    const kept = read.stop;
+    if (kept && !this.stopGuard) {
       // Held from before the restart: checked (and written when needed) at once.
       this.stopGuard = {
         address: kept.address,
@@ -262,18 +291,23 @@ export class AprilaireApp {
         refused: undefined,
         timer: undefined,
       };
+      this.armStopCheck(0);
+    }
+    if (this.stopGuard || current.attemptAt > read.attemptAt || current.address !== read.address) {
+      this.persist();
     }
   }
 
   /** Saves the memory; resolves false when /data refused it (or cannot be read). */
   async saveMemory({ withoutStop = false } = {}) {
-    if (this.memoryUnreadable) return false;
+    if (this.memoryUnreadable || !this.memoryReady) return false;
     const g = withoutStop ? undefined : this.stopGuard;
     this.memory.stop = g
       ? {
           address: g.address,
           clickedAt: g.clickedAt,
-          written: g.written,
+          // A click not written yet is kept as never written.
+          written: g.written && !g.mustWrite,
           sentAt: g.sentWall,
           reasserts: g.reasserts,
           others: g.others,
@@ -319,14 +353,9 @@ export class AprilaireApp {
    */
   boot() {
     return this.serialized(async () => {
+      // A stop kept there is checked at once when read (applyMemory): its
+      // check opens the session to the address kept with it.
       await this.loadMemory();
-      const g = this.stopGuard;
-      if (!g || this.conn) return;
-      const address = parseAddress(g.address);
-      if (!address) return;
-      this.logger.info('Aprilaire: a stop kept from before the restart is checked');
-      this.openConn(address);
-      this.armStopCheck(0);
     });
   }
 
@@ -441,6 +470,9 @@ export class AprilaireApp {
       this.stopGuard.address = this.config.key;
     }
     if (!address) {
+      // No thermostat any more: a stop held waits for an address (never the old one).
+      this.memory.address = undefined;
+      this.persist();
       await this.publishAll();
       return;
     }
@@ -545,7 +577,9 @@ export class AprilaireApp {
   /** The delay before the next attempt after `failures` failures (a stop held: see runCheck). */
   backoff(conn) {
     const list = TIMINGS.backoff;
-    return list[Math.min(Math.max(conn.failures - 1, 0), list.length - 1)];
+    const wait = list[Math.min(Math.max(conn.failures - 1, 0), list.length - 1)];
+    // A stop held: a minute at most (and the status says so).
+    return this.stopGuard ? Math.min(wait, TIMINGS.stopBackoff) : wait;
   }
 
   /** The time of the attempt in /data (at most once a minute), before the attempt. */
@@ -647,7 +681,10 @@ export class AprilaireApp {
       conn.failures += 1;
       conn.error = err;
       this.logger.warn(`Aprilaire: session with ${conn.key} lost (${errorReason(err)})`);
-      this.scheduleConnect(this.backoff(conn));
+      // A stop just clicked (its write may not have counted): tried again
+      // every second for 10 s.
+      const urgent = this.stopGuard && this.mono() < (conn.urgentUntil ?? -Infinity);
+      this.scheduleConnect(urgent ? TIMINGS.stopConnectRetry : this.backoff(conn));
     }
     this.publishAll().catch(() => {});
   }
@@ -696,7 +733,7 @@ export class AprilaireApp {
   cutIfStuck() {
     const conn = this.conn;
     const session = conn?.session;
-    if (!session || !this.running || this.running.priority === PRIORITY.stop) return;
+    if (!session?.active || !this.running || this.running.priority === PRIORITY.stop) return;
     if (session.stuckFor(TIMINGS.stuckRead)) {
       this.logger.warn('Aprilaire: a request in flight is silent: cut for the stop');
       conn.cutForStop = true;
@@ -707,7 +744,7 @@ export class AprilaireApp {
     // Checked again once it has been silent long enough.
     const wait = Math.max(
       1,
-      TIMINGS.stuckRead - (this.mono() - Math.max(this.running.session.lastByteAt, 0)),
+      TIMINGS.stuckRead - (this.mono() - Math.max(session.active.sentAt ?? 0, session.lastByteAt)),
     );
     this.timers.setTimeout(() => {
       if (this.queue.some((q) => q.priority === PRIORITY.stop)) this.cutIfStuck();
@@ -735,16 +772,24 @@ export class AprilaireApp {
   /** At each session: the identity first, then what does not change. */
   async hello(conn, session) {
     let ident;
+    // Read again at the next poll when it fails (never a session left mute).
+    const retry = () => {
+      if (conn === this.conn && conn.session === session && !this.pollTimer) {
+        this.schedulePoll(this.interval);
+      }
+    };
     try {
       ident = await this.read(conn, session, [DOMAIN.IDENTIFICATION, 2]);
     } catch (err) {
       this.lastReadError = err;
+      retry();
       await this.updateStatus();
       return;
     }
     if (conn !== this.conn || conn.session !== session) return;
     if (!ident?.mac) {
       this.logger.warn('Aprilaire: the MAC address could not be read');
+      retry();
       await this.updateStatus();
       return;
     }
@@ -813,9 +858,11 @@ export class AprilaireApp {
     const session = conn?.session;
     this.lastPollAt = this.mono();
     this.schedulePoll(this.interval);
-    if (!session || !conn.identity) {
-      if (session) await this.hello(conn, session);
-      return;
+    if (!session) return;
+    if (!conn.identity) {
+      // The identity first (it failed before); the values right after it.
+      await this.hello(conn, session);
+      if (!conn.identity || conn.session !== session) return;
     }
     await this.readValues(conn, session, POLL_READS, PRIORITY.read);
   }
@@ -1030,7 +1077,8 @@ export class AprilaireApp {
     const g = this.stopGuard;
     if (g) {
       if (g.refused !== undefined) parts.push(T.stopRefused(g.refused));
-      if (!g.written || g.mustWrite) parts.push(T.stopNotSent);
+      if (g.mustWrite && g.busy !== undefined) parts.push(T.stopBusy(g.busy));
+      else if (!g.written || g.mustWrite) parts.push(T.stopNotSent);
       else if (g.reasserts >= TIMINGS.stopReasserts) parts.push(T.stopGivenUp(g.reasserts + 1));
       else parts.push(T.stopUnconfirmed(g.reasserts + 1));
     }
@@ -1133,6 +1181,12 @@ export class AprilaireApp {
       );
     }
     if (change.field === 'mode' && change.value === HVAC_MODE.OFF) {
+      // Another thermostat known to answer at the address: the one of this
+      // device is not there, and the other one is not turned off for it.
+      const seen = this.conn?.session ? this.conn.identity?.mac : undefined;
+      if (seen !== undefined && seen !== target.mac) {
+        throw this.refusal(ERRORS.stopOtherThermostat);
+      }
       return this.protect(received);
     }
     if (change.outOfRange) {
@@ -1317,7 +1371,15 @@ export class AprilaireApp {
       }
     } else if (field === 'heat' || field === 'cool') {
       if (!(field === 'heat' ? can.heat : can.cool)) throw this.refusal(ERRORS.modeUnavailable);
-      if (current[field] === value && !this.guardActive(field)) return null;
+      if (!this.guardActive(field)) {
+        if (current[field] === value) return null;
+        // Displayed in °F (or unknown), the thermostat keeps whole °F: a
+        // setpoint less than 1 °F away is that same whole °F, already set.
+        const scale = this.attrs.get(SETUP)?.values.scale;
+        if (scale !== TEMPERATURE_SCALE.CELSIUS && Math.abs(current[field] - value) < 5 / 9) {
+          return null;
+        }
+      }
     } else if (current[field] === value && !this.guardActive(field)) {
       return null;
     }
@@ -1341,11 +1403,10 @@ export class AprilaireApp {
     if (plan.field === 'heat' || plan.field === 'cool') {
       if (got === plan.expected) return true;
       const scale = this.attrs.get(SETUP)?.values.scale;
-      return (
-        scale !== TEMPERATURE_SCALE.CELSIUS &&
-        got !== plan.from &&
-        Math.abs(got - plan.expected) <= 0.5
-      );
+      // Displayed in °F, the thermostat keeps whole °F. The value of before
+      // never confirms: one less than 1 °F away was "already so" (plan), and
+      // a guard rewriting the same whole °F is confirmed by that whole °F.
+      return scale !== TEMPERATURE_SCALE.CELSIUS && Math.abs(got - plan.expected) <= 0.5;
     }
     return got === plan.expected;
   }
@@ -1503,16 +1564,18 @@ export class AprilaireApp {
   kickStop() {
     let conn = this.conn;
     if (!conn) {
+      // The address of the configuration, else /data's (cleared when the
+      // configuration has none: never an old address).
       const address = this.config.address ?? parseAddress(this.memory.address ?? '');
       if (!address) return;
       conn = this.openConn(address);
     }
+    conn.urgentUntil = this.mono() + TIMINGS.stopUrgent;
     if (conn.session) {
       this.sendStop('click').catch((err) => this.logger.warn(`Aprilaire: stop: ${err.message}`));
       return;
     }
     if (conn.opening) return;
-    conn.urgentUntil = this.mono() + TIMINGS.stopUrgent;
     const since = conn.lastAttemptAt === undefined ? Infinity : this.mono() - conn.lastAttemptAt;
     if (since >= TIMINGS.stopConnectSpacing) {
       if (conn.timer) this.timers.clearTimeout(conn.timer);
@@ -1570,7 +1633,6 @@ export class AprilaireApp {
         // Not written (no session, closed): kept, the checks and the next session send it.
         if (!err?.sent) g.mustWrite = g.mustWrite || !g.written || why === 'click';
         this.persist();
-        await this.updateStatus();
         return;
       }
       this.logger.info('Aprilaire: stop (mode Off) sent');
@@ -1584,6 +1646,14 @@ export class AprilaireApp {
           session,
         );
       } catch {
+        if (session.bytesReceived === 0 && this.stopGuard === g) {
+          // A session closed without a byte from the thermostat (another
+          // system holds it): the write is not counted as sent.
+          g.mustWrite = true;
+          if (resend && g.reasserts > 0) g.reasserts -= 1;
+          this.persist();
+          return;
+        }
         outcome = { written: true };
         return;
       }
@@ -1591,9 +1661,11 @@ export class AprilaireApp {
       if (nack !== undefined && this.stopGuard === g) {
         const reason = `NACK 0x${nack.toString(16).padStart(2, '0')}`;
         if (RETRYABLE_NACKS.has(nack)) {
-          // Busy: not applied, does not count; written again at the next check.
-          g.mustWrite = true;
-          if (g.reasserts > 0 && resend) g.reasserts -= 1;
+          // Busy: not applied, does not count. A click is still to write; a
+          // resend is decided again by the next check.
+          g.busy = reason;
+          if (resend) g.reasserts = Math.max(0, g.reasserts - 1);
+          else g.mustWrite = true;
         } else {
           g.refused = reason;
         }
@@ -1608,8 +1680,23 @@ export class AprilaireApp {
         }
         outcome = { confirmed: true };
       } else {
-        if (this.stopGuard === g && back.mode !== undefined && back.mode !== HVAC_MODE.OFF) {
-          if (!g.before.includes(back.mode)) g.before.push(back.mode);
+        if (this.stopGuard === g && nack === undefined) {
+          g.busy = undefined;
+          if (g.before.length === 0 && back.mode !== undefined && back.mode !== HVAC_MODE.OFF) {
+            // The read back of the first write of a click: the mode of before
+            // (a resend comes only once a check read it: never empty then).
+            g.before.push(back.mode);
+          } else if (resend) {
+            // The read back of a resend is a read like any other (a mode
+            // chosen at the thermostat meanwhile is never a mode of before).
+            const decision = this.decideStop(g, back.mode, startedAt);
+            if (decision === 'drop') {
+              this.logger.info(
+                'Aprilaire: the mode changed after the stop (not by Gladys): not sent again',
+              );
+              this.dropStopGuard();
+            }
+          }
         }
         outcome ??= { written: true };
         this.persist();
@@ -1622,13 +1709,14 @@ export class AprilaireApp {
     } finally {
       this.stopSending = false;
       if (outcome) this.answerStop(outcome, g.sentAt);
-      await this.updateStatus();
       if (this.stopAgain) {
         this.stopAgain = false;
         if (this.stopGuard?.mustWrite) {
           this.sendStop('click').catch(() => {});
         }
       }
+      // Never awaited: the stop never waits for Gladys.
+      this.updateStatus().catch(() => {});
     }
   }
 
@@ -1637,8 +1725,8 @@ export class AprilaireApp {
    * 'drop' (another mode than those of before, read twice in a row: set at
    * the thermostat, never overridden) or 'resend'. Only reads sent after the
    * click count; the first mode read after it is the mode of before (an
-   * unknown mode never counts as "changed elsewhere"). Written again only 5 s
-   * after the last write, three times at most per click; a stop never
+   * unknown mode never counts as "changed elsewhere"). Written again by the
+   * checks only (15 s apart at least), three times at most per click; a stop never
    * written is always written. Never 'drop' by the time.
    */
   decideStop(g, mode, readStartedAt) {
@@ -1648,7 +1736,6 @@ export class AprilaireApp {
       return g.mustWrite ? 'resend' : 'done';
     }
     if (g.mustWrite) return 'resend';
-    if (g.sentAt !== undefined && readStartedAt < g.sentAt + TIMINGS.applyDelay) return 'wait';
     if (g.before.length === 0) {
       g.before.push(mode);
     } else if (!g.before.includes(mode)) {
@@ -1708,6 +1795,7 @@ export class AprilaireApp {
           : Math.max(0, conn.lastAttemptAt + TIMINGS.stopBackoff - this.mono());
       if (!conn.opening && (!conn.timer || conn.nextAt - this.mono() > due)) {
         this.scheduleConnect(due);
+        this.updateStatus().catch(() => {});
       }
       return;
     }
@@ -1744,7 +1832,7 @@ export class AprilaireApp {
       await this.sendStop('resend');
     } else {
       this.persist();
-      await this.updateStatus();
+      this.updateStatus().catch(() => {});
     }
     if (conn.identity) {
       this.publishValues([C1]);

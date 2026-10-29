@@ -142,6 +142,7 @@ export class Session {
     this.closed = false;
     this.lastByteAt = monotonic();
     this.unanswered = 0;
+    this.bytesReceived = 0;
     /** NACKs of writes, by sequence (the last 16). */
     this.nacks = new Map();
     this.closedPromise = new Promise((resolve) => {
@@ -160,6 +161,8 @@ export class Session {
 
   nextSequence() {
     this.sequence = (this.sequence % 127) + 1;
+    // A NACK kept for this number belongs to an older request: never read again.
+    this.nacks.delete(this.sequence);
     return this.sequence;
   }
 
@@ -256,6 +259,7 @@ export class Session {
   receive(chunk) {
     // After the end, nothing is handled (checked frame by frame below).
     this.lastByteAt = this.monotonic();
+    this.bytesReceived += chunk.length;
     let frames;
     try {
       frames = this.reader.push(chunk);

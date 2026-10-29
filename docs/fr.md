@@ -83,7 +83,11 @@ thermostat jamais lu, ni à une configuration pas encore lue après un redémarr
   lecture en cours qui n’a rien reçu depuis 1,5 s est coupée (la session est fermée, puis rouverte
   pour l’arrêt).
 - Il est écrit sans lecture avant, puis relu. Il part vers l’adresse de la configuration, sans
-  vérifier l’identité du thermostat.
+  attendre la lecture de l’identité du thermostat ni celle de `/data` (lue 1 s au plus au démarrage,
+  reprise ensuite).
+- Si une connexion est acceptée puis fermée aussitôt sans un octet du thermostat (une autre domotique
+  le tient), l’écriture ne compte pas : l’arrêt est réécrit, chaque seconde pendant les 10 s qui
+  suivent le clic, puis chaque minute.
 - Sans session (thermostat injoignable), il est **gardé** (en mémoire et dans `/data`) et part dès
   que le thermostat répond ; une nouvelle connexion est tentée au clic, puis au moins chaque minute.
   Un arrêt jamais parti n’est jamais abandonné, même après un redémarrage (il part alors avant même la
@@ -98,7 +102,10 @@ Cas où l’arrêt ne part pas (le statut de l’intégration le dit) :
 
 - aucune adresse valide dans la configuration (gardé, il part dès qu’une adresse est enregistrée) ;
 - le thermostat ne répond pas ou refuse la connexion (gardé, il part dès qu’il répond) ;
-- le thermostat refuse l’écriture (code NACK affiché ; retenté aux vérifications suivantes).
+- le thermostat refuse l’écriture (code NACK affiché ; une réponse « occupé » ne compte pas et
+  l’arrêt est réécrit à chaque vérification) ;
+- un autre thermostat (une autre adresse MAC lue dans la session) répond à l’adresse : l’arrêt
+  demandé pour l’appareil d’avant est refusé, rien n’est envoyé à l’autre.
 
 ## Limites connues
 

@@ -47,7 +47,14 @@
   nothing.
 - Stop (mode Off): see `src/app.js` header. Not subject to the option (the brief of the module:
   "l'arrêt n'est soumis à rien"), nor to the identity (it goes to the configured address, before the
-  MAC is read). Held until a read shows Off, a newer mode command leaves (lifted in `/data` first,
+  MAC is read); refused only when the session read another MAC than the device's (review r1, m6).
+  /data is awaited 1 s at most (review r1, B1): read later, it is merged (a stop kept there checked at
+  once), and nothing is written to it before. No call to Gladys is awaited on the path of the stop
+  (r1, I1). A NACK is kept per sequence number until the number is given again (r1, I2). The mode
+  of before is the read back of the first write of a click (or the first check); the read back of a
+  resend is a read like any other (r1, I5). A write into a session that closed without a byte does
+  not count (r1, m3). In °F display, a setpoint less than 1 °F from the value read is already so
+  (r1, m7). Held until a read shows Off, a newer mode command leaves (lifted in `/data` first,
   bounded at 1 s: `/data` failing = the command refused unsent), or another mode is read twice in a
   row. Three resends per click; a busy NACK does not count; a stop never written is written at every
   check. Waiting clicks are answered only by a write sent after them.

@@ -80,7 +80,11 @@ a restart.
 - It goes first: every command clicked before it and not sent yet is dropped; a read in progress that
   received nothing for 1.5 s is cut (the session is closed, then opened again for the stop).
 - It is written without a read first, then read back. It goes to the address of the configuration,
-  without checking the identity of the thermostat.
+  without waiting for the identity of the thermostat nor for `/data` (read 1 s at most at the start,
+  merged later).
+- When a connection is accepted then closed at once without a byte from the thermostat (another
+  system holds it), the write does not count: the stop is written again, every second for the 10 s
+  after the click, then every minute.
 - Without a session (thermostat unreachable), it is **kept** (in memory and in `/data`) and leaves as
   soon as the thermostat answers; a connection is tried at the click, then at least every minute. A
   stop never sent is never given up, even after a restart (it then leaves before the configuration is
@@ -94,7 +98,10 @@ When the stop does not leave (the status of the integration says so):
 
 - no valid address in the configuration (kept, it leaves once an address is saved);
 - the thermostat does not answer or refuses the connection (kept, it leaves once it answers);
-- the thermostat refuses the write (NACK code shown; tried again at the next checks).
+- the thermostat refuses the write (NACK code shown; a "busy" answer does not count and the stop is
+  written again at every check);
+- another thermostat (another MAC address read in the session) answers at the address: the stop
+  asked for the previous device is refused, nothing is sent to the other one.
 
 ## Known limits
 

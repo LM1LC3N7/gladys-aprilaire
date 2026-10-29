@@ -265,8 +265,13 @@ export const T = {
     ),
   stopRefused: (reason) =>
     both(
-      `The thermostat refused the stop (${reason}): it is tried again at the next checks.`,
-      `Le thermostat a refusé l’arrêt (${reason}) : il est retenté aux prochaines vérifications.`,
+      `The thermostat refused the stop (${reason}).`,
+      `Le thermostat a refusé l’arrêt (${reason}).`,
+    ),
+  stopBusy: (reason) =>
+    both(
+      `A stop (mode Off) is kept: the thermostat answered "busy" (${reason}), not applied; written again at every check (every 15 s, then every minute).`,
+      `Un arrêt (mode Arrêt) est gardé : le thermostat a répondu « occupé » (${reason}), non appliqué ; réécrit à chaque vérification (toutes les 15 s, puis chaque minute).`,
     ),
   test: {
     later: (wait) =>
@@ -353,6 +358,10 @@ export const ERRORS = {
   readBackDiffers: both(
     'the thermostat does not show it yet',
     'le thermostat ne le montre pas encore',
+  ),
+  stopOtherThermostat: both(
+    'Another thermostat answers at the address of the configuration: this one is not there, and the other one is not turned off for it. Nothing sent.',
+    'Un autre thermostat répond à l’adresse de la configuration : celui-ci n’y est pas, et l’autre n’est pas éteint à sa place. Rien envoyé.',
   ),
   stopKept: both(
     'Stop not sent yet (no session with the thermostat): it is kept and leaves first as soon as the thermostat answers.',

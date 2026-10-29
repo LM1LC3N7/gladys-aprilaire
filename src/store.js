@@ -72,6 +72,8 @@ export function memoryStore(initial = null, { failing = false, unreadable = fals
     hang: false,
     held: [],
     async load() {
+      // `loadGate`: a promise the load waits for (a slow or frozen /data).
+      if (this.loadGate) await this.loadGate;
       if (this.unreadable) return { unreadable: true };
       return { data: this.data === null ? null : JSON.parse(JSON.stringify(this.data)) };
     },

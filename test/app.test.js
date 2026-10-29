@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEVICE_TRANSPORTS } from '@gladysassistant/integration-sdk';
 import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
-import { AprilaireApp } from '../src/app.js';
+import { AprilaireApp, PRIORITY } from '../src/app.js';
 import { memoryStore } from '../src/store.js';
 import { ALLOW, CFG, DEVICE, MINUTE, SECOND, feature, setup } from './helpers.js';
 import { HOST, NOW, fakeAprilaire } from './fixtures/fakeAprilaire.js';
@@ -66,7 +66,11 @@ const controlWrites = (th) => th.writes().filter((w) => w.domain === 2 && w.attr
 test('commands off by default: a setpoint refused unsent; the stop goes all the same', async (t) => {
   const ctx = await setup();
   t.after(ctx.stop);
-  const ack = await ctx.press('heat-setpoint', 22);
+  const reads = ctx.th.log.length;
+  const pending = ctx.fire('heat-setpoint', 22);
+  await ctx.advance(50, 10);
+  assert.equal(ctx.th.log.length, reads, 'refused on arrival: not even a read');
+  const ack = await pending;
   assert.equal(ack.success, false);
   assert.match(ack.message ?? ack.error ?? '', /désactivées/);
   assert.equal(controlWrites(ctx.th).length, 0);
@@ -214,6 +218,8 @@ test('a stop cuts a read that received nothing for 1.5 s: a new session, the old
   assert.equal(answer.success, true, JSON.stringify(answer));
   assert.equal(ctx.th.connections, sessions + 1, 'one new session');
   const stopWrite = ctx.th.writes().find((w) => w.data[0] === 1);
+  const fresh = ctx.th.log.filter((r) => r.socket === ctx.th.connections);
+  assert.equal(fresh[0].action, 1, 'the first request of the new session is the stop');
   assert.ok(
     stopWrite.at - firedAt < 1500,
     `stop written ${stopWrite.at - firedAt} ms after the click`,
@@ -342,6 +348,7 @@ test('a restart with a stop in /data: sent before Gladys and the configuration a
   await ctx.advance(2 * SECOND, 10);
   const [write] = controlWrites(ctx.th);
   assert.deepEqual(write?.data, [1, 0, 0, 0]);
+  assert.equal(ctx.th.log[0].action, 1, 'the stop is the first request, before any read');
   assert.equal(ctx.th.state.mode, 1);
   assert.equal(ctx.app.stopGuard, undefined);
   assert.equal(store.data.stop, undefined);
@@ -464,9 +471,16 @@ test('°F display: a setpoint kept as whole °F is confirmed within 0.5 °C, nev
     return out;
   };
   assert.equal((await ctx.press('heat-setpoint', 22)).success, true);
-  th.applyWrites = false;
   th.state.heat = 22.5;
-  const same = await ctx.press('heat-setpoint', 23, 4 * SECOND);
+  const writes = controlWrites(th).length;
+  assert.equal((await ctx.press('heat-setpoint', 23)).success, true);
+  assert.equal(
+    controlWrites(th).length,
+    writes,
+    '23 °C = 73 °F, already kept as 22.5: nothing written',
+  );
+  th.applyWrites = false;
+  const same = await ctx.press('heat-setpoint', 24, 4 * SECOND);
   assert.equal(same.success, false, 'the value of before is not a confirmation');
 });
 
@@ -600,11 +614,11 @@ test('the line: a stop goes before every request waiting, whatever their order',
   };
   app.conn = { session };
   const all = [
-    app.line({ name: 'read-1' }, 3, session),
-    app.line({ name: 'read-2' }, 3, session),
-    app.line({ name: 'check' }, 2, session),
-    app.line({ name: 'command' }, 1, session),
-    app.line({ name: 'stop' }, 0, session),
+    app.line({ name: 'read-1' }, PRIORITY.read, session),
+    app.line({ name: 'read-2' }, PRIORITY.read, session),
+    app.line({ name: 'check' }, PRIORITY.check, session),
+    app.line({ name: 'command' }, PRIORITY.command, session),
+    app.line({ name: 'stop' }, PRIORITY.stop, session),
   ];
   for (let i = 0; i < 5; i += 1) {
     await new Promise((resolve) => setImmediate(resolve));
@@ -746,4 +760,336 @@ test('a stop clicked while the configuration cannot be read goes to the address 
   assert.equal(ack.success, true, JSON.stringify(ack));
   assert.deepEqual(controlWrites(ctx.th)[0].data, [1, 0, 0, 0]);
   assert.equal(ctx.th.state.mode, 1);
+});
+
+// --- Review r1 ---------------------------------------------------------------
+
+test('r1 B1: /data that never answers: the stop goes to the address of the configuration, several in a row', async (t) => {
+  const store = memoryStore({ attemptAt: NOW - 10 * MINUTE });
+  store.loadGate = new Promise(() => {});
+  const ctx = await setup({ store });
+  t.after(ctx.stop);
+  for (let i = 0; i < 3; i += 1) {
+    ctx.th.state.mode = 2;
+    const ack = await ctx.press('mode', OFF, 5 * SECOND);
+    assert.equal(ack.success, true, `stop ${i}: ${JSON.stringify(ack)}`);
+  }
+  assert.equal(controlWrites(ctx.th).length, 3);
+  assert.equal(store.saves, 0, 'never written over a file not read');
+});
+
+test('r1 B1: /data read 3 s late: started without it, its stop merged and sent', async (t) => {
+  const store = memoryStore({
+    attemptAt: NOW - 10 * MINUTE,
+    address: `${HOST}:7000`,
+    stop: { address: `${HOST}:7000`, written: false, reasserts: 0 },
+  });
+  let release;
+  store.loadGate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  clock.timers.setTimeout(() => release(), 3 * SECOND);
+  const ctx = await setup({ store, clock, th, boot: false, create: false });
+  t.after(ctx.stop);
+  assert.equal(ctx.gladys.fake.discoveredDevices.length > 0 || th.connections > 0, true, 'started');
+  await ctx.advance(5 * SECOND, 50);
+  assert.equal(th.state.mode, 1, 'the stop kept in /data was sent once read');
+  assert.equal(store.data.stop, undefined);
+});
+
+test('r1 I1: a slow Gladys (status 8 s) never delays a stop', async (t) => {
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ clock, th });
+  t.after(ctx.stop);
+  const original = ctx.gladys.setConnectionStatus.bind(ctx.gladys);
+  ctx.gladys.setConnectionStatus = async (...a) => {
+    await new Promise((resolve) => clock.timers.setTimeout(resolve, 8 * SECOND));
+    return original(...a);
+  };
+  th.silentFor = (frame) => frame.action === 2 && frame.domain === 5;
+  for (let i = 0; i < 700 && ctx.app.running?.request.domain !== 5; i += 1) {
+    await ctx.advance(100, 100);
+  }
+  th.silentFor = undefined;
+  const firedAt = clock.now();
+  const ack = ctx.fire('mode', OFF);
+  await ctx.advance(5 * SECOND, 10);
+  assert.equal((await ack).success, true);
+  const write = th.writes()[0];
+  assert.ok(write.at - firedAt < 3 * SECOND, `${write.at - firedAt} ms`);
+});
+
+test('r1 I3: the identity not read once: read again at the next interval, never a mute session', async (t) => {
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  let lost = 0;
+  th.silentFor = (frame) => frame.domain === 8 && frame.attribute === 2 && lost++ === 0;
+  const ctx = await setup({ clock, th, create: false });
+  t.after(ctx.stop);
+  assert.equal(ctx.gladys.fake.discoveredDevices.length, 0);
+  await ctx.advance(70 * SECOND, 500);
+  assert.equal(ctx.gladys.fake.discoveredDevices.length, 1);
+  assert.equal(ctx.gladys.fake.connectionStatus.connected, true);
+});
+
+test('r1 I5: a mode chosen at the thermostat while a resend is read back ends the stop, never resent over it', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  const handle = ctx.th.handle.bind(ctx.th);
+  let offWrites = 0;
+  let changedAt;
+  ctx.th.handle = (frame) => {
+    if (frame.action === 1 && frame.data[0] === 1 && ++offWrites === 2) {
+      ctx.th.state.mode = 3; // cooling chosen at the thermostat
+      changedAt = ctx.th.log.length;
+    }
+    return handle(frame);
+  };
+  await ctx.press('mode', OFF, 5 * SECOND);
+  await ctx.advance(10 * MINUTE, 500);
+  assert.ok(changedAt !== undefined, 'a resend happened');
+  const after = ctx.th.log.slice(changedAt).filter((r) => r.action === 1);
+  assert.equal(after.length, 0, 'never sent again over the new mode');
+  assert.equal(ctx.app.stopGuard, undefined, 'ended: another mode read twice');
+});
+
+test('r1 I4 (M10): the read back of the stop lost: the mode read later is the mode of before, the stop sent again', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  // The read back right after the first write of the stop is never answered.
+  let lost = false;
+  ctx.th.silentFor = (frame) => {
+    const last = ctx.th.log.at(-2);
+    if (!lost && frame.domain === 2 && frame.attribute === 1 && last?.action === 1) {
+      lost = true;
+      return true;
+    }
+    return false;
+  };
+  await ctx.press('mode', OFF, 5 * SECOND);
+  ctx.th.silentFor = undefined;
+  await ctx.advance(10 * MINUTE, 500);
+  assert.equal(controlWrites(ctx.th).length, 4, 'the click and 3 resends');
+  assert.ok(ctx.app.stopGuard, 'still held');
+});
+
+test('r1 I4 (M6): a "busy" answer to a resend is not counted', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  ctx.th.writeNacks = { 2: 0x03 };
+  await ctx.press('mode', OFF, 5 * SECOND);
+  await ctx.advance(10 * MINUTE, 500);
+  assert.equal(controlWrites(ctx.th).length, 5, 'the click, 3 resends and the busy one');
+});
+
+test('r1 I4 (M46, M47): a change message never decides the stop; "twice in a row" means in a row', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  await ctx.press('mode', OFF, 5 * SECOND);
+  ctx.th.state.mode = 3;
+  ctx.th.push(2, 1);
+  ctx.th.push(2, 1);
+  ctx.th.state.mode = 2;
+  await ctx.advance(SECOND, 50);
+  assert.ok(ctx.app.stopGuard, 'not ended by change messages');
+  const g = { since: 0, mustWrite: false, sentAt: 0, before: [2], reasserts: 3, others: 0 };
+  assert.equal(ctx.app.decideStop(g, 3, 10_000), 'wait');
+  assert.equal(ctx.app.decideStop(g, 2, 10_001), 'wait');
+  assert.equal(ctx.app.decideStop(g, 3, 10_002), 'wait', 'not in a row');
+  assert.equal(ctx.app.decideStop(g, 3, 10_003), 'drop');
+});
+
+test('r1 I4 (M51, m1): a click not written yet is kept in /data as never written', async (t) => {
+  const store = memoryStore();
+  const ctx = await setup({ store });
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  await ctx.press('mode', OFF, 5 * SECOND);
+  assert.equal(store.data.stop.written, true);
+  ctx.th.down = true;
+  ctx.th.hangUp();
+  await ctx.advance(SECOND, 100);
+  await ctx.press('mode', OFF, 5 * SECOND);
+  assert.equal(store.data.stop.written, false);
+});
+
+test('r1 I2: a NACK kept for a sequence number is never read again when the number comes back', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  ctx.th.nack.write = 0x10;
+  assert.equal((await ctx.press('fan-mode', 'on')).success, false);
+  // About 130 requests later, the same sequence number is given again.
+  await ctx.advance(14 * MINUTE, 1000);
+  const ack = await ctx.press('heat-setpoint', 23);
+  assert.equal(ack.success, true, JSON.stringify(ack));
+  const stop = await ctx.press('mode', OFF);
+  assert.equal(stop.success, true, JSON.stringify(stop));
+});
+
+test('r1 m7: bounds before rounding (32.24 refused); exact read back in °C display; a command overtaken by a stop', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  assert.equal((await ctx.press('heat-setpoint', 32.24, SECOND)).success, false);
+  const handle = ctx.th.handle.bind(ctx.th);
+  ctx.th.handle = (frame) => {
+    const out = handle(frame);
+    if (frame.action === 1 && ctx.th.state.heat === 22) ctx.th.state.heat = 22.5;
+    return out;
+  };
+  const near = await ctx.press('heat-setpoint', 22, 4 * SECOND);
+  assert.equal(near.success, false, '°C display: 22.5 is not 22');
+  ctx.th.handle = (frame) => {
+    const out = handle(frame);
+    if (frame.action === 1 && frame.data[1] === 1)
+      ctx.app.setValue(undefined, { external_id: feature('mode') }, OFF).catch(() => {});
+    return out;
+  };
+  const fan = await ctx.press('fan-mode', 'on');
+  assert.equal(fan.success, false);
+  assert.match(text(fan), /l’arrêt l’emporte/);
+});
+
+test('r1 m3: a connection accepted then closed at once does not count the stop as sent', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.hangUp();
+  ctx.th.acceptThenClose = true;
+  await ctx.advance(SECOND, 100);
+  const clickedAt = ctx.clock.now();
+  const ack = ctx.fire('mode', OFF);
+  await ctx.advance(3 * SECOND, 50);
+  assert.ok(ctx.app.stopGuard.mustWrite, 'still to write');
+  assert.doesNotMatch(status(ctx), /envoyé 1 fois/);
+  ctx.th.acceptThenClose = false;
+  const releasedAt = ctx.clock.now();
+  await ctx.advance(8 * SECOND, 50);
+  await ack;
+  assert.equal(ctx.th.state.mode, 1);
+  const off = ctx.th.writes().filter((w) => w.data[0] === 1 && w.at > releasedAt);
+  assert.ok(
+    off.length > 0 && off[0].at - releasedAt < 3 * SECOND,
+    'sent within seconds of the release',
+  );
+  const offWrites = ctx.th.writes().filter((w) => w.data[0] === 1);
+  assert.ok(offWrites.at(-1).at - clickedAt < 12 * SECOND);
+});
+
+test('r1 m4: the address erased while a stop is held: the old address is never opened again', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  await ctx.press('mode', OFF, 5 * SECOND);
+  await ctx.gladys.fake.configUpdated({ address: '' });
+  await ctx.advance(SECOND, 100);
+  const connections = ctx.th.connections;
+  const log = ctx.th.log.length;
+  await ctx.advance(5 * MINUTE, 1000);
+  assert.equal(ctx.th.connections, connections);
+  assert.equal(ctx.th.log.length, log);
+  assert.equal(ctx.th.open.size, 0);
+});
+
+test('r1 m6: a stop for a thermostat no longer at the address is refused, the other one untouched', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.state.mac = [0x0a, 0, 0, 0, 0, 1];
+  ctx.th.hangUp();
+  await ctx.advance(40 * SECOND, 500);
+  const ack = await ctx.press('mode', OFF);
+  assert.equal(ack.success, false);
+  assert.match(text(ack), /Un autre thermostat répond/);
+  assert.equal(controlWrites(ctx.th).length, 0);
+});
+
+test('r1 m2: while a stop is held, the status gives the next attempt within a minute', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.down = true;
+  ctx.th.hangUp();
+  await ctx.advance(20 * MINUTE, 1000); // the backoff is at 10 minutes
+  await ctx.press('mode', OFF, 5 * SECOND);
+  await ctx.advance(7 * SECOND, 500); // the urgent tries are over, the check not run yet
+  const wait = /next try in (\d+) (s|min)/.exec(ctx.gladys.fake.connectionStatus.message.en);
+  assert.ok(wait, ctx.gladys.fake.connectionStatus.message.en);
+  assert.ok(wait[2] === 's' || Number(wait[1]) <= 1, wait[0]);
+});
+
+test('r1 (M9, M13): a stop never applied ("busy") is never ended by a read: neither Off read nor other modes', async (t) => {
+  const store = memoryStore({
+    attemptAt: NOW - 10 * MINUTE,
+    address: `${HOST}:7000`,
+    stop: { address: `${HOST}:7000`, written: false, reasserts: 0, before: [2] },
+  });
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  th.nack.write = 0x03;
+  th.nackSticky = true;
+  th.state.mode = 3; // set at the thermostat: another mode than the one kept before
+  const ctx = await setup({ store, clock, th, boot: true });
+  t.after(ctx.stop);
+  await ctx.advance(3 * MINUTE, 500);
+  assert.ok(ctx.app.stopGuard?.mustWrite, 'still to write after reads of another mode');
+  th.state.mode = 1; // Off read, the stop still not applied by Gladys
+  await ctx.advance(2 * MINUTE, 500);
+  assert.ok(ctx.app.stopGuard?.mustWrite, 'an Off read does not end a stop never written');
+  th.nackSticky = false;
+  delete th.nack.write;
+  await ctx.advance(2 * MINUTE, 500);
+  assert.equal(ctx.app.stopGuard, undefined, 'written at last, confirmed');
+});
+
+test('r1 (M1): option off: a command refused at once, never waiting behind another one', async (t) => {
+  const ctx = await setup({ config: ALLOW });
+  t.after(ctx.stop);
+  ctx.th.delay = 1500;
+  const first = ctx.fire('heat-setpoint', 24);
+  await ctx.advance(100, 10);
+  await ctx.gladys.fake.configUpdated(CFG);
+  const askedAt = ctx.clock.now();
+  let answeredAt;
+  const second = ctx.fire('cool-setpoint', 26).then((a) => {
+    answeredAt = ctx.clock.now();
+    return a;
+  });
+  await ctx.advance(6 * SECOND, 20);
+  await first;
+  assert.match(text(await second), /désactivées/);
+  assert.ok(answeredAt - askedAt < 500, `answered after ${answeredAt - askedAt} ms`);
+});
+
+test('r1 I5: first read back lost, then a mode chosen at the thermostat at a resend: still never absorbed', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.applyWrites = false;
+  let lost = false;
+  ctx.th.silentFor = (frame) => {
+    const last = ctx.th.log.at(-2);
+    if (!lost && frame.domain === 2 && frame.attribute === 1 && last?.action === 1) {
+      lost = true;
+      return true;
+    }
+    return false;
+  };
+  const handle = ctx.th.handle.bind(ctx.th);
+  let offWrites = 0;
+  let changedAt;
+  ctx.th.handle = (frame) => {
+    if (frame.action === 1 && frame.data[0] === 1 && ++offWrites === 2) {
+      ctx.th.state.mode = 3;
+      changedAt = ctx.th.log.length;
+    }
+    return handle(frame);
+  };
+  await ctx.press('mode', OFF, 5 * SECOND);
+  await ctx.advance(10 * MINUTE, 500);
+  assert.ok(changedAt !== undefined, 'a resend happened');
+  assert.equal(ctx.th.log.slice(changedAt).filter((r) => r.action === 1).length, 0);
+  assert.equal(ctx.app.stopGuard, undefined);
 });

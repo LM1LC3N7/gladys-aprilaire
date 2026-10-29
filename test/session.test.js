@@ -132,3 +132,28 @@ test('bytes after the session ended are ignored', async () => {
   socket.answer(buildFrame(140, 5, 7, 6, [2, 0, 0, 1]));
   assert.deepEqual(cos, []);
 });
+
+test('r1 I2: the NACK of a number is forgotten when the number is given again', async () => {
+  const { socket, session } = open();
+  const { sequence } = await session.request({
+    kind: 'write',
+    domain: 2,
+    attribute: 1,
+    data: [0, 1, 0, 0],
+  });
+  socket.answer(buildNack(sequence, 0x10));
+  assert.equal(session.nackOf(sequence), 0x10);
+  for (let i = 0; i < 126; i += 1) {
+    const read = session.request({ kind: 'read', domain: 2, attribute: 1 });
+    socket.answer(buildFrame(socket.sent.at(-1).sequence, 3, 2, 1, [2, 2, 20, 25]));
+    await read;
+  }
+  const again = await session.request({
+    kind: 'write',
+    domain: 2,
+    attribute: 1,
+    data: [1, 0, 0, 0],
+  });
+  assert.equal(again.sequence, sequence);
+  assert.equal(session.nackOf(sequence), undefined);
+});

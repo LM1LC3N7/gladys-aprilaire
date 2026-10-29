@@ -121,7 +121,7 @@ export function fakeAprilaire({ timers, now } = {}) {
         return;
       }
       for (const frame of frames) {
-        device.log.push({ at: device.now?.(), ...frame });
+        device.log.push({ at: device.now?.(), socket: socket.id, ...frame });
         const out = device.handle(frame);
         if (out.length === 0) continue;
         if (device.silent || device.silentFor?.(frame)) continue;
@@ -145,6 +145,9 @@ export function fakeAprilaire({ timers, now } = {}) {
         return [buildFrame(sequence, 3, domain, attribute, payload)];
       }
       if (action === 1) {
+        device.writeCount = (device.writeCount ?? 0) + 1;
+        const nth = device.writeNacks?.[device.writeCount];
+        if (nth !== undefined) return [buildNack(sequence, nth)];
         if (device.nack.write !== undefined) {
           const status = device.nack.write;
           if (!device.nackSticky) delete device.nack.write;
@@ -223,6 +226,7 @@ export function fakeAprilaire({ timers, now } = {}) {
     connect() {
       const socket = new FakeSocket(device);
       device.connections += 1;
+      socket.id = device.connections;
       device.connectAt.push(device.now?.());
       timers.setTimeout(() => {
         if (socket.destroyed) return;
@@ -232,6 +236,10 @@ export function fakeAprilaire({ timers, now } = {}) {
           return;
         }
         device.open.add(socket);
+        if (device.acceptThenClose) {
+          // Accepted, then closed at once without a byte (another system holds it).
+          timers.setTimeout(() => socket.destroy(), 20);
+        }
         device.maxOpen = Math.max(device.maxOpen, device.open.size);
         socket.emit('connect');
       }, device.connectDelay);
