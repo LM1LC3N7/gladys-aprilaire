@@ -249,6 +249,15 @@ export const T = {
       `Another thermostat answers at this address (MAC ${mac}): it is a new device in the Discovery tab; the previous one gets no value any more.`,
       `Un autre thermostat répond à cette adresse (MAC ${mac}) : c’est un nouvel appareil dans l’onglet Découverte ; le précédent ne reçoit plus de valeur.`,
     ),
+  stopRefusedOther: (mac, other) =>
+    both(
+      `A stop of the thermostat ${mac} was refused: another thermostat (${other}) answers at the address; add it from the Discovery tab (the device ${mac} is not turned off).`,
+      `Un arrêt du thermostat ${mac} a été refusé : un autre thermostat (${other}) répond à l’adresse ; ajoutez-le depuis l’onglet Découverte (l’appareil ${mac} n’est pas éteint).`,
+    ),
+  dataSlow: both(
+    'The memory of the integration in /data is not read yet: a stop clicked meanwhile is not kept there (lost if the container restarts before).',
+    'La mémoire de l’intégration dans /data n’est pas encore lue : un arrêt cliqué en attendant n’y est pas gardé (perdu si le conteneur redémarre avant).',
+  ),
   stopNotSent: both(
     'A stop (mode Off) is kept: not sent yet, it leaves first as soon as the thermostat answers.',
     'Un arrêt (mode Arrêt) est gardé : pas encore envoyé, il part en premier dès que le thermostat répond.',

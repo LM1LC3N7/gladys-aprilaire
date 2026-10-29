@@ -105,7 +105,12 @@ Cas où l’arrêt ne part pas (le statut de l’intégration le dit) :
 - le thermostat refuse l’écriture (code NACK affiché ; une réponse « occupé » ne compte pas et
   l’arrêt est réécrit à chaque vérification) ;
 - un autre thermostat (une autre adresse MAC lue dans la session) répond à l’adresse : l’arrêt
-  demandé pour l’appareil d’avant est refusé, rien n’est envoyé à l’autre.
+  demandé pour l’appareil d’avant est refusé, rien n’est envoyé à l’autre ; le statut le dit jusqu’à
+  ce qu’un arrêt parte ou que cet appareil soit supprimé (ajoutez le nouveau depuis Découverte).
+
+Tant que `/data` n’est pas lu (stockage lent), le statut le dit : un arrêt cliqué en attendant part,
+mais n’y est pas gardé. Un arrêt gardé lu tard n’est pas envoyé si un mode ou un arrêt a été écrit
+depuis le démarrage (il est plus ancien).
 
 ## Limites connues
 

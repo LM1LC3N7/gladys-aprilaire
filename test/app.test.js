@@ -471,17 +471,18 @@ test('°F display: a setpoint kept as whole °F is confirmed within 0.5 °C, nev
     return out;
   };
   assert.equal((await ctx.press('heat-setpoint', 22)).success, true);
-  th.state.heat = 22.5;
+  // r2 N1 (a): 70 °F read as 21.0, 71 °F asked (21.5): written, never "already so".
+  th.handle = write;
+  th.state.heat = 21;
   const writes = controlWrites(th).length;
-  assert.equal((await ctx.press('heat-setpoint', 23)).success, true);
-  assert.equal(
-    controlWrites(th).length,
-    writes,
-    '23 °C = 73 °F, already kept as 22.5: nothing written',
-  );
+  assert.equal((await ctx.press('heat-setpoint', 21.5)).success, true);
+  assert.equal(controlWrites(th).length, writes + 1, 'written');
+  // r2 N1 (b): writes ignored; 23 then 22 under the guard: 22.5, the value of before, never confirms.
   th.applyWrites = false;
-  const same = await ctx.press('heat-setpoint', 24, 4 * SECOND);
-  assert.equal(same.success, false, 'the value of before is not a confirmation');
+  th.state.heat = 22.5;
+  assert.equal((await ctx.press('heat-setpoint', 23, 4 * SECOND)).success, false);
+  const before = await ctx.press('heat-setpoint', 22, 4 * SECOND);
+  assert.equal(before.success, false, 'the value of before is not a confirmation');
 });
 
 test('an attribute the thermostat lacks is not asked again; a secondary read failing never blocks the values', async (t) => {
@@ -1092,4 +1093,160 @@ test('r1 I5: first read back lost, then a mode chosen at the thermostat at a res
   assert.ok(changedAt !== undefined, 'a resend happened');
   assert.equal(ctx.th.log.slice(changedAt).filter((r) => r.action === 1).length, 0);
   assert.equal(ctx.app.stopGuard, undefined);
+});
+
+test('r2 N1 (c): the display scale unread: a setpoint 0.5 °C away is written, never "already so"', async (t) => {
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  th.unsupported.add('1/1');
+  th.state.heat = 21;
+  const ctx = await setup({ config: ALLOW, clock, th });
+  t.after(ctx.stop);
+  assert.equal((await ctx.press('heat-setpoint', 21.5)).success, true);
+  assert.equal(controlWrites(th).length, 1);
+  assert.equal(th.state.heat, 21.5);
+});
+
+test('r2 N2: a stop read late from /data never goes over a mode written since the start', async (t) => {
+  const store = memoryStore({
+    attemptAt: NOW - 10 * MINUTE,
+    address: `${HOST}:7000`,
+    stop: { address: `${HOST}:7000`, written: false, reasserts: 0 },
+  });
+  let release;
+  store.loadGate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ store, clock, th, config: ALLOW });
+  t.after(ctx.stop);
+  assert.match(status(ctx), /pas encore lue/, 'n1: the status says /data is not read');
+  assert.equal((await ctx.press('mode', OFF)).success, true);
+  assert.equal((await ctx.press('mode', HEATING)).success, true);
+  const writes = controlWrites(th).length;
+  release();
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(th.state.mode, 2, 'heating kept');
+  assert.equal(controlWrites(th).length, writes, 'the old stop never written');
+  assert.equal(store.data.stop, undefined, 'and removed from /data');
+  assert.doesNotMatch(status(ctx), /pas encore lue/);
+});
+
+test('r2 N3: a stop refused for another thermostat stays in the status until a stop leaves', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.state.mac = [0x0a, 0, 0, 0, 0, 1];
+  ctx.th.hangUp();
+  await ctx.advance(40 * SECOND, 500);
+  ctx.th.hangUp(); // a second session with the other thermostat
+  await ctx.advance(40 * SECOND, 500);
+  assert.equal((await ctx.press('mode', OFF)).success, false);
+  assert.match(status(ctx), /Un arrêt du thermostat 0a:1b:2c:3d:4e:5f a été refusé/);
+  await ctx.advance(2 * MINUTE, 1000);
+  assert.match(status(ctx), /a été refusé/, 'still said');
+  const other = ctx.gladys.fake.setValue(
+    { external_id: 'ext:test-integration:aprilaire:0a0000000001' },
+    { external_id: 'ext:test-integration:aprilaire:0a0000000001:mode' },
+    OFF,
+  );
+  await ctx.advance(5 * SECOND, 50);
+  assert.equal((await other).success, true);
+  assert.doesNotMatch(status(ctx), /a été refusé/);
+});
+
+test('r2 n2 (R11): disconnected, the MAC kept in /data never refuses a stop', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.stop);
+  ctx.th.state.mac = [0x0a, 0, 0, 0, 0, 1];
+  ctx.th.hangUp();
+  await ctx.advance(40 * SECOND, 500); // /data learns the other MAC
+  ctx.th.down = true;
+  ctx.th.hangUp();
+  await ctx.advance(SECOND, 100);
+  const ack = await ctx.press('mode', OFF, 5 * SECOND);
+  assert.doesNotMatch(text(ack), /Un autre thermostat/);
+  assert.ok(ctx.app.stopGuard, 'kept, sent when the thermostat answers');
+});
+
+test('r2 n2 (R6b): a MAC read as zeros is read again at the next interval', async (t) => {
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  th.state.mac = [0, 0, 0, 0, 0, 0];
+  const ctx = await setup({ clock, th, create: false });
+  t.after(ctx.stop);
+  assert.equal(ctx.gladys.fake.discoveredDevices.length, 0);
+  th.state.mac = [0x0a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f];
+  await ctx.advance(70 * SECOND, 500);
+  assert.equal(ctx.gladys.fake.discoveredDevices.length, 1);
+});
+
+test('r2 n2 (R4b): a second click is written at once even when Gladys answers the status slowly', async (t) => {
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ clock, th });
+  t.after(ctx.stop);
+  const original = ctx.gladys.setConnectionStatus.bind(ctx.gladys);
+  ctx.gladys.setConnectionStatus = async (...a) => {
+    await new Promise((resolve) => clock.timers.setTimeout(resolve, 8 * SECOND));
+    return original(...a);
+  };
+  th.delay = 1000;
+  const first = ctx.fire('mode', OFF);
+  await ctx.advance(500, 10);
+  th.applyWrites = false;
+  th.state.mode = 2;
+  const clickedAt = clock.now();
+  const second = ctx.fire('mode', OFF);
+  await ctx.advance(6 * SECOND, 50);
+  await Promise.all([first, second]);
+  const writes = th.writes().filter((w) => w.data[0] === 1);
+  assert.equal(writes.length, 2);
+  assert.ok(writes[1].at - clickedAt < 2 * SECOND, `${writes[1].at - clickedAt} ms`);
+});
+
+test('r2 n2 (R14): a stop behind a request just sent on an idle session: no spinning timers', async (t) => {
+  const clock = testClock({ start: NOW });
+  let set = 0;
+  const setTimeout = clock.timers.setTimeout;
+  clock.timers.setTimeout = (...a) => {
+    set += 1;
+    return setTimeout(...a);
+  };
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  const ctx = await setup({ clock, th });
+  t.after(ctx.stop);
+  // The first read of a poll, after a minute without a byte, is never answered.
+  th.silentFor = (frame) => frame.action === 2 && frame.domain === 2 && frame.attribute === 1;
+  for (let i = 0; i < 700 && ctx.app.running?.request.domain !== 2; i += 1) {
+    await ctx.advance(100, 100);
+  }
+  th.silentFor = undefined;
+  const before = set;
+  const ack = ctx.fire('mode', OFF);
+  await ctx.advance(3 * SECOND, 1);
+  await ack;
+  assert.ok(set - before < 60, `${set - before} timers`);
+});
+
+test('r2 N2: a mode command alone (no stop) since the start also drops a stop read late', async (t) => {
+  const store = memoryStore({
+    attemptAt: NOW - 10 * MINUTE,
+    address: `${HOST}:7000`,
+    stop: { address: `${HOST}:7000`, written: false, reasserts: 0 },
+  });
+  let release;
+  store.loadGate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const clock = testClock({ start: NOW });
+  const th = fakeAprilaire({ timers: clock.timers, now: clock.now });
+  th.state.mode = 1;
+  const ctx = await setup({ store, clock, th, config: ALLOW });
+  t.after(ctx.stop);
+  assert.equal((await ctx.press('mode', HEATING)).success, true);
+  release();
+  await ctx.advance(3 * MINUTE, 500);
+  assert.equal(th.state.mode, 2, 'heating kept');
+  assert.equal(controlWrites(th).length, 1);
 });

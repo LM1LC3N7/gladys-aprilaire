@@ -101,7 +101,12 @@ When the stop does not leave (the status of the integration says so):
 - the thermostat refuses the write (NACK code shown; a "busy" answer does not count and the stop is
   written again at every check);
 - another thermostat (another MAC address read in the session) answers at the address: the stop
-  asked for the previous device is refused, nothing is sent to the other one.
+  asked for the previous device is refused, nothing is sent to the other one; the status says so
+  until a stop leaves or that device is deleted (add the new one from Discovery).
+
+While `/data` is not read (slow storage), the status says so: a stop clicked meanwhile leaves, but is
+not kept there. A stop kept there and read late is not sent if a mode or a stop was written since the
+start (it is older).
 
 ## Known limits
 

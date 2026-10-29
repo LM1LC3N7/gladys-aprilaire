@@ -253,6 +253,8 @@ export class AprilaireApp {
     this.timers.clearTimeout(timer);
     if (!this.memoryReady && !this.memoryUnreadable && !this.memorySlowSaid) {
       this.memorySlowSaid = true;
+      this.memorySlow = true;
+      this.updateStatus().catch(() => {});
       this.logger.warn('Aprilaire: /data is slow to read: going on without it meanwhile');
     }
   }
@@ -275,8 +277,13 @@ export class AprilaireApp {
     };
     this.savedAttemptAt = read.attemptAt;
     this.memoryReady = true;
+    if (this.memorySlow) this.updateStatus().catch(() => {});
     const kept = read.stop;
-    if (kept && !this.stopGuard) {
+    if (kept && !this.stopGuard && this.modeWrittenThisRun) {
+      // A stop or a mode written since the start is newer than this stop
+      // (clicked before the restart): it is dropped, never sent over it.
+      this.logger.info('Aprilaire: a stop read late from /data is older than a mode written since');
+    } else if (kept && !this.stopGuard) {
       // Held from before the restart: checked (and written when needed) at once.
       this.stopGuard = {
         address: kept.address,
@@ -293,6 +300,8 @@ export class AprilaireApp {
       };
       this.armStopCheck(0);
     }
+    // A stop dropped above implies a mode written, so a connection: its newer
+    // attempt rewrites /data, without that stop.
     if (this.stopGuard || current.attemptAt > read.attemptAt || current.address !== read.address) {
       this.persist();
     }
@@ -1074,6 +1083,12 @@ export class AprilaireApp {
     } else if (conn?.nextAt !== undefined) {
       parts.push(T.waiting(age(Math.max(0, conn.nextAt - this.mono()))));
     }
+    if (this.stopRefusedFor) {
+      parts.push(
+        T.stopRefusedOther(macText(this.stopRefusedFor.mac), macText(this.stopRefusedFor.other)),
+      );
+    }
+    if (this.memorySlow && !this.memoryReady && !this.memoryUnreadable) parts.push(T.dataSlow);
     const g = this.stopGuard;
     if (g) {
       if (g.refused !== undefined) parts.push(T.stopRefused(g.refused));
@@ -1119,7 +1134,12 @@ export class AprilaireApp {
   }
 
   async deviceDeleted(device) {
-    if (!parseDeviceId(device?.external_id)) return;
+    const mac = parseDeviceId(device?.external_id);
+    if (!mac) return;
+    if (this.stopRefusedFor?.mac === mac) {
+      this.stopRefusedFor = undefined;
+      this.updateStatus().catch(() => {});
+    }
     this.publisher.forget(device.external_id);
     this.lastBadge = undefined;
   }
@@ -1185,6 +1205,9 @@ export class AprilaireApp {
       // device is not there, and the other one is not turned off for it.
       const seen = this.conn?.session ? this.conn.identity?.mac : undefined;
       if (seen !== undefined && seen !== target.mac) {
+        // Said in the status until a stop leaves or that device is deleted.
+        this.stopRefusedFor = { mac: target.mac, other: seen };
+        this.updateStatus().catch(() => {});
         throw this.refusal(ERRORS.stopOtherThermostat);
       }
       return this.protect(received);
@@ -1297,6 +1320,7 @@ export class AprilaireApp {
               throw this.refusal(ERRORS.stopHeld);
             }
             if (heldStop) this.dropStopGuard({ persist: false });
+            if (change.field === 'mode') this.modeWrittenThisRun = true;
             this.writeSeq += 1;
             entry.sentSeq = this.writeSeq;
             entry.written = true;
@@ -1371,15 +1395,9 @@ export class AprilaireApp {
       }
     } else if (field === 'heat' || field === 'cool') {
       if (!(field === 'heat' ? can.heat : can.cool)) throw this.refusal(ERRORS.modeUnavailable);
-      if (!this.guardActive(field)) {
-        if (current[field] === value) return null;
-        // Displayed in °F (or unknown), the thermostat keeps whole °F: a
-        // setpoint less than 1 °F away is that same whole °F, already set.
-        const scale = this.attrs.get(SETUP)?.values.scale;
-        if (scale !== TEMPERATURE_SCALE.CELSIUS && Math.abs(current[field] - value) < 5 / 9) {
-          return null;
-        }
-      }
+      // "Already so" only for the very value (review r2, N1: two neighbouring
+      // whole °F read 0.5 °C apart).
+      if (current[field] === value && !this.guardActive(field)) return null;
     } else if (current[field] === value && !this.guardActive(field)) {
       return null;
     }
@@ -1403,10 +1421,13 @@ export class AprilaireApp {
     if (plan.field === 'heat' || plan.field === 'cool') {
       if (got === plan.expected) return true;
       const scale = this.attrs.get(SETUP)?.values.scale;
-      // Displayed in °F, the thermostat keeps whole °F. The value of before
-      // never confirms: one less than 1 °F away was "already so" (plan), and
-      // a guard rewriting the same whole °F is confirmed by that whole °F.
-      return scale !== TEMPERATURE_SCALE.CELSIUS && Math.abs(got - plan.expected) <= 0.5;
+      // Displayed in °F (or unknown), the thermostat keeps whole °F: within
+      // 0.5 °C confirms, but never the value of before.
+      return (
+        scale !== TEMPERATURE_SCALE.CELSIUS &&
+        got !== plan.from &&
+        Math.abs(got - plan.expected) <= 0.5
+      );
     }
     return got === plan.expected;
   }
@@ -1620,6 +1641,8 @@ export class AprilaireApp {
               resend = g.mustWrite ? false : resend;
               g.mustWrite = false;
               g.written = true;
+              this.modeWrittenThisRun = true;
+              this.stopRefusedFor = undefined;
               g.sentAt = this.mono();
               g.sentWall = this.now();
               this.writeSeq += 1;

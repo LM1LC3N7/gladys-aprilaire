@@ -53,8 +53,11 @@
   (r1, I1). A NACK is kept per sequence number until the number is given again (r1, I2). The mode
   of before is the read back of the first write of a click (or the first check); the read back of a
   resend is a read like any other (r1, I5). A write into a session that closed without a byte does
-  not count (r1, m3). In °F display, a setpoint less than 1 °F from the value read is already so
-  (r1, m7). Held until a read shows Off, a newer mode command leaves (lifted in `/data` first,
+  not count (r1, m3). "Already so" only for the very value read, and in °F display (or an
+  unread scale) a read back within 0.5 °C confirms but never the value of before (r2, N1: the r1 m7
+  shortcut swallowed a whole °F). A stop read late from /data is dropped when a stop or a mode was
+  written since the start (r2, N2). A stop refused for another MAC is said in the status until a stop
+  leaves or that device is deleted (r2, N3); /data not read yet is said too (r2, n1). Held until a read shows Off, a newer mode command leaves (lifted in `/data` first,
   bounded at 1 s: `/data` failing = the command refused unsent), or another mode is read twice in a
   row. Three resends per click; a busy NACK does not count; a stop never written is written at every
   check. Waiting clicks are answered only by a write sent after them.
