@@ -10,6 +10,15 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Adding the thermostat failed with "HTTP 422 … t_device_feature.min cannot be null": the fan list
+  (`text`/`select`) had no `min` and `max`, which Gladys requires, so Gladys refused the whole
+  device. It now has 0 and 0, like the other text/select integrations, and a test checks every
+  feature of every device the module can build against the Gladys model. Gladys saves a device in
+  one transaction, so nothing of the refused thermostat was kept: update, then add it again from the
+  Discovery tab.
+
 ## [0.1.1] - 2026-10-29
 
 ### Added

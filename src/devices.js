@@ -202,9 +202,14 @@ export function definitions(shape, language) {
       sort_order: index,
     })),
   });
+  // A text/select carries its value as text, but Gladys still needs a min and
+  // a max (not null in t_device_feature: HTTP 422 and the whole thermostat
+  // refused otherwise): 0 and 0, like the other text/select integrations.
   defs[FEATURES.FAN] = command({
     category: C.TEXT,
     type: T.TEXT.SELECT,
+    min: 0,
+    max: 0,
     keep_history: false,
     supported_options: FAN_MAP.map(([name], index) => ({
       value: name,

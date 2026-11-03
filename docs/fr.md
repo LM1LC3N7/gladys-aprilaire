@@ -114,6 +114,13 @@ mais n’y est pas gardé. Un arrêt gardé lu tard n’est pas envoyé si un ar
 thermostat n’a pas refusé, a été écrit depuis le démarrage (il est plus ancien) ; il est alors retiré
 de `/data`.
 
+## Dépannage
+
+- **« HTTP 422 … t_device_feature.min ne peut pas être nul »** en ajoutant le thermostat (versions
+  0.1.1 et antérieures) : Gladys refusait la liste « Ventilateur », et avec elle tout le thermostat.
+  Mettez l’intégration à jour, puis ajoutez de nouveau le thermostat depuis l’onglet **Découverte**.
+  Gladys n’avait rien enregistré de l’appareil refusé : il n’y a rien à supprimer.
+
 ## Limites connues
 
 - Jamais testé avec un vrai appareil ; aucun thermostat nord-américain n’était disponible.

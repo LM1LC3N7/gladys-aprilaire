@@ -111,6 +111,13 @@ While `/data` is not read (slow storage), the status says so: a stop clicked mea
 not kept there. A stop kept there and read late is not sent if a stop, or a mode the thermostat did
 not refuse, was written since the start (it is older); it is then removed from `/data`.
 
+## Troubleshooting
+
+- **"HTTP 422 … t_device_feature.min cannot be null"** when adding the thermostat (versions 0.1.1
+  and earlier): Gladys refused the "Fan" list, and with it the whole thermostat. Update the
+  integration, then add the thermostat again from the **Discovery** tab. Gladys saved nothing of the
+  refused device: there is nothing to delete.
+
 ## Known limits
 
 - Never tested with a real device; no North American thermostat was at hand.

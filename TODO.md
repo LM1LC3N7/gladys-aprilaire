@@ -12,6 +12,13 @@
 - Neighbour module followed: LM1LC3N7/gladys-venstar (thermostat features, the fan as
   `text/select`, never a switch); structure, stop guard and tests after LM1LC3N7/gladys-weishaupt
   (approved, lot 18).
+- **The fan list carries min 0 and max 0** (2026-11-03): Gladys stores `min`/`max` as not null
+  for every feature, text/select included (HTTP 422 and the whole device refused otherwise; the SDK
+  fake Gladys does not check it). 0/0 like toshiba-ac and most text/select integrations.
+  `test/devices.test.js` checks every feature of every shape the thermostat can show against the
+  core model (`test/helpers/coreFeature.js`; the core's own lists and normalizeSupportedOptions
+  when its clone is on the machine).
+- SDK 0.16: `should_poll: false` and no `poll_frequency`, so Gladys 5.3 does not poll the device.
 - No `keywords` nor `countries` in the manifest (US, CA product): to add if the store asks.
 - Category: `climate` only.
 - One thermostat per installation. Identifier rule (frozen): `aprilaire:<mac>`, the MAC address
