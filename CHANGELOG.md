@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-03
+
 ### Fixed
 
 - Adding the thermostat failed with "HTTP 422 … t_device_feature.min cannot be null": the fan list
@@ -34,5 +36,6 @@ the notes of the version's GitHub Release.
   sent again at a restart before the configuration is read.
 - "Test the connection" button; status and transport badge.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-aprilaire/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LM1LC3N7/gladys-aprilaire/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LM1LC3N7/gladys-aprilaire/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LM1LC3N7/gladys-aprilaire/releases/tag/v0.1.1
