@@ -116,7 +116,7 @@ de `/data`.
 
 ## Dépannage
 
-- **« HTTP 422 … t_device_feature.min ne peut pas être nul »** en ajoutant le thermostat (versions
+- **« Valeur minimum : champ obligatoire non renseigné par l'intégration » (HTTP 422)** en ajoutant le thermostat (versions
   0.1.1 et antérieures) : Gladys refusait la liste « Ventilateur », et avec elle tout le thermostat.
   Mettez l’intégration à jour, puis ajoutez de nouveau le thermostat depuis l’onglet **Découverte**.
   Gladys n’avait rien enregistré de l’appareil refusé : il n’y a rien à supprimer.
